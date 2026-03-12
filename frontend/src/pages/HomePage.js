@@ -1,0 +1,108 @@
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Zap, Users, User, GraduationCap } from 'lucide-react';
+
+const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+
+export default function HomePage() {
+  const navigate = useNavigate();
+
+  const cards = [
+    {
+      title: 'Host a Quiz',
+      desc: 'Search Binance Academy, generate questions & challenge friends',
+      icon: Zap,
+      color: '#F3BA2F',
+      path: '/host',
+      testId: 'host-quiz-btn',
+    },
+    {
+      title: 'Join a Game',
+      desc: 'Enter a game code and compete in real-time',
+      icon: Users,
+      color: '#00F0FF',
+      path: '/join',
+      testId: 'join-quiz-btn',
+    },
+    {
+      title: 'Solo Mode',
+      desc: 'Learn at your own pace with timed quizzes',
+      icon: User,
+      color: '#00FF29',
+      path: '/solo',
+      testId: 'solo-quiz-btn',
+    },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-5 py-10 relative z-10">
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="text-center mb-10"
+      >
+        <div className="flex items-center justify-center gap-3 mb-3">
+          <GraduationCap size={40} color="#F3BA2F" />
+          <h1
+            data-testid="app-title"
+            className="text-4xl md:text-5xl font-bold tracking-tight"
+            style={{ color: '#F3BA2F' }}
+          >
+            CryptoQuiz
+          </h1>
+        </div>
+        <p className="text-gray-400 text-lg max-w-md mx-auto">
+          Kahoot-style quizzes powered by Binance Academy
+        </p>
+        {tgUser && (
+          <p className="text-gray-500 text-sm mt-2">
+            Hey {tgUser.first_name}!
+          </p>
+        )}
+      </motion.div>
+
+      <div className="w-full max-w-sm space-y-4">
+        {cards.map((card, i) => (
+          <motion.button
+            key={card.path}
+            data-testid={card.testId}
+            initial={{ opacity: 0, x: -30 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: i * 0.1, duration: 0.25 }}
+            onClick={() => navigate(card.path)}
+            className="w-full flex items-center gap-4 p-5 rounded-2xl border transition-all active:scale-[0.97]"
+            style={{
+              background: '#121212',
+              borderColor: `${card.color}30`,
+            }}
+            whileHover={{ borderColor: card.color, scale: 1.01 }}
+          >
+            <div
+              className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+              style={{ background: `${card.color}15` }}
+            >
+              <card.icon size={24} color={card.color} />
+            </div>
+            <div className="text-left">
+              <h3 className="font-semibold text-lg" style={{ color: card.color }}>
+                {card.title}
+              </h3>
+              <p className="text-gray-500 text-sm">{card.desc}</p>
+            </div>
+          </motion.button>
+        ))}
+      </div>
+
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.5 }}
+        className="text-gray-600 text-xs mt-10 text-center"
+      >
+        Content sourced from Binance Academy
+      </motion.p>
+    </div>
+  );
+}

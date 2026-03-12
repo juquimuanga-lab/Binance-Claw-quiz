@@ -1,1141 +1,615 @@
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from starlette.websockets import WebSocketState
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import json
 import secrets
-import subprocess
 import asyncio
 import httpx
-import websockets
-from websockets.exceptions import ConnectionClosed
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+import re
 import uuid
-from datetime import datetime, timezone, timedelta
-
-# WhatsApp monitoring
-from whatsapp_monitor import get_whatsapp_status, fix_registered_flag
-# Gateway management (supervisor-based)
-from gateway_config import write_gateway_env, clear_gateway_env
-from supervisor_client import SupervisorClient
+from pathlib import Path
+from pydantic import BaseModel
+from typing import List, Optional, Dict
+from datetime import datetime, timezone
+from bs4 import BeautifulSoup
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'moltbot_app')]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 
-# Create the main app without a prefix
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', '')
+
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Moltbot Gateway Management
-MOLTBOT_PORT = 18789
-MOLTBOT_CONTROL_PORT = 18791
-CONFIG_DIR = os.path.expanduser("~/.clawdbot")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "clawdbot.json")
-WORKSPACE_DIR = os.path.expanduser("~/clawd")
-
-# Global state for gateway (per-user)
-# Note: Process is managed by supervisor, we only track metadata here
-gateway_state = {
-    "token": None,
-    "provider": None,
-    "started_at": None,
-    "owner_user_id": None  # Track which user owns this instance
-}
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 # ============== Pydantic Models ==============
 
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+class ArticleFetchRequest(BaseModel):
+    url: str
 
+class GenerateQuizRequest(BaseModel):
+    article_url: str
+    article_title: str
+    article_content: str
+    num_questions: int = 10
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class CreateSessionRequest(BaseModel):
+    host_name: str
+    quiz_id: str
 
+class JoinSessionRequest(BaseModel):
+    code: str
+    nickname: str
 
-class OpenClawStartRequest(BaseModel):
-    provider: str = "emergent"  # "emergent", "anthropic", or "openai"
-    apiKey: Optional[str] = None  # Optional - uses Emergent key if not provided
 
+# ============== Binance Academy ==============
 
-class OpenClawStartResponse(BaseModel):
-    ok: bool
-    controlUrl: str
-    token: str
-    message: str
+ACADEMY_BASE = "https://www.binance.com/en/academy"
+ARTICLE_CACHE: Dict[str, dict] = {}
 
-
-class OpenClawStatusResponse(BaseModel):
-    running: bool
-    pid: Optional[int] = None
-    provider: Optional[str] = None
-    started_at: Optional[str] = None
-    controlUrl: Optional[str] = None
-    owner_user_id: Optional[str] = None
-    is_owner: Optional[bool] = None
-
-
-class User(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    user_id: str
-    email: str
-    name: str
-    picture: Optional[str] = None
-    created_at: Optional[datetime] = None
-
-
-class SessionRequest(BaseModel):
-    session_id: str
-
-
-# ============== Authentication Helpers ==============
-
-EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
-SESSION_EXPIRY_DAYS = 7
-
-
-async def get_instance_owner() -> Optional[dict]:
-    """Get the instance owner from database. Returns None if not locked yet."""
-    doc = await db.instance_config.find_one({"_id": "instance_owner"})
-    return doc
-
-
-async def set_instance_owner(user: User) -> None:
-    """Lock the instance to a specific user. Only succeeds if not already locked."""
-    await db.instance_config.update_one(
-        {"_id": "instance_owner"},
-        {
-            "$setOnInsert": {
-                "user_id": user.user_id,
-                "email": user.email,
-                "name": user.name,
-                "locked_at": datetime.now(timezone.utc)
-            }
-        },
-        upsert=True
-    )
-
-
-async def check_instance_access(user: User) -> bool:
-    """Check if user is allowed to access this instance. Returns True if allowed."""
-    owner = await get_instance_owner()
-    if not owner:
-        # Instance not locked yet - anyone can access
-        return True
-    return owner.get("user_id") == user.user_id
-
-
-async def get_current_user(request: Request) -> Optional[User]:
-    """
-    Get current user from session token.
-    Checks cookie first, then Authorization header as fallback.
-    Returns None if not authenticated.
-    """
-    session_token = None
-
-    # Check cookie first
-    session_token = request.cookies.get("session_token")
-
-    # Fallback to Authorization header
-    if not session_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            session_token = auth_header.split(" ")[1]
-
-    if not session_token:
-        return None
-
-    # Look up session in database
-    session_doc = await db.user_sessions.find_one(
-        {"session_token": session_token},
-        {"_id": 0}
-    )
-
-    if not session_doc:
-        return None
-
-    # Check expiry
-    expires_at = session_doc.get("expires_at")
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-    if expires_at < datetime.now(timezone.utc):
-        return None
-
-    # Get user
-    user_doc = await db.users.find_one(
-        {"user_id": session_doc["user_id"]},
-        {"_id": 0}
-    )
-
-    if not user_doc:
-        return None
-
-    return User(**user_doc)
-
-
-async def require_auth(request: Request) -> User:
-    """Dependency that requires authentication and instance access"""
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    # Check if user is allowed to access this instance
-    if not await check_instance_access(user):
-        owner = await get_instance_owner()
-        raise HTTPException(
-            status_code=403, 
-            detail=f"This instance is locked to {owner.get('email', 'another user')}. Access denied."
-        )
-    return user
-
-
-# ============== Auth Endpoints ==============
-
-@api_router.get("/auth/instance")
-async def get_instance_status():
-    """
-    Check if the instance is locked.
-    Public endpoint - only returns locked status, no owner details.
-    """
-    owner = await get_instance_owner()
-    if owner:
-        return {"locked": True}
-    return {"locked": False}
-
-
-@api_router.post("/auth/session")
-async def create_session(request: SessionRequest, response: Response):
-    """
-    Exchange session_id from Emergent Auth for a session token.
-    Creates user if not exists, creates session, sets cookie.
-    Blocks non-owners if instance is locked.
-    """
-    try:
-        # Call Emergent Auth to get user data
-        async with httpx.AsyncClient() as client:
-            auth_response = await client.get(
-                EMERGENT_AUTH_URL,
-                headers={"X-Session-ID": request.session_id},
-                timeout=10.0
-            )
-
-        if auth_response.status_code != 200:
-            logger.error(f"Emergent Auth error: {auth_response.status_code} - {auth_response.text}")
-            raise HTTPException(status_code=401, detail="Invalid session_id")
-
-        auth_data = auth_response.json()
-        email = auth_data.get("email")
-        name = auth_data.get("name", email.split("@")[0] if email else "User")
-        picture = auth_data.get("picture")
-
-        if not email:
-            raise HTTPException(status_code=400, detail="No email in auth response")
-
-        # Check if instance is locked to another user
-        owner = await get_instance_owner()
-        if owner and owner.get("email") != email:
-            logger.warning(f"Blocked login attempt from {email} - instance locked to {owner.get('email')}")
-            raise HTTPException(
-                status_code=403,
-                detail=f"This instance is private and locked to {owner.get('email')}. Access denied."
-            )
-
-        # Check if user exists
-        existing_user = await db.users.find_one({"email": email}, {"_id": 0})
-
-        if existing_user:
-            user_id = existing_user["user_id"]
-            # Update user info
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"name": name, "picture": picture}}
-            )
-        else:
-            # Create new user
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            await db.users.insert_one({
-                "user_id": user_id,
-                "email": email,
-                "name": name,
-                "picture": picture,
-                "created_at": datetime.now(timezone.utc)
-            })
-
-        # Create session
-        session_token = secrets.token_hex(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
-
-        await db.user_sessions.insert_one({
-            "user_id": user_id,
-            "session_token": session_token,
-            "expires_at": expires_at,
-            "created_at": datetime.now(timezone.utc)
-        })
-
-        # Set cookie
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            path="/",
-            max_age=SESSION_EXPIRY_DAYS * 24 * 60 * 60
-        )
-
-        # Get user data
-        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-
-        return {
-            "ok": True,
-            "user": user_doc
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session creation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.get("/auth/me")
-async def get_me(request: Request):
-    """Get current authenticated user"""
-    user = await get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return user.model_dump()
-
-
-@api_router.post("/auth/logout")
-async def logout(request: Request, response: Response):
-    """Logout - delete session and clear cookie"""
-    session_token = request.cookies.get("session_token")
-
-    if session_token:
-        await db.user_sessions.delete_one({"session_token": session_token})
-
-    response.delete_cookie(
-        key="session_token",
-        path="/",
-        secure=True,
-        samesite="none"
-    )
-
-    return {"ok": True, "message": "Logged out"}
-
-
-# ============== Moltbot Helpers ==============
-
-# Persistent paths for Node.js and clawdbot
-NODE_DIR = "/root/nodejs"
-CLAWDBOT_DIR = "/root/.clawdbot-bin"
-CLAWDBOT_WRAPPER = "/root/run_clawdbot.sh"
-
-def get_clawdbot_command():
-    """Get the path to clawdbot executable"""
-    # Try wrapper script first
-    if os.path.exists(CLAWDBOT_WRAPPER):
-        return CLAWDBOT_WRAPPER
-    # Try persistent location
-    if os.path.exists(f"{CLAWDBOT_DIR}/clawdbot"):
-        return f"{CLAWDBOT_DIR}/clawdbot"
-    if os.path.exists(f"{NODE_DIR}/bin/clawdbot"):
-        return f"{NODE_DIR}/bin/clawdbot"
-    # Try system path
-    import shutil
-    clawdbot_path = shutil.which("clawdbot")
-    if clawdbot_path:
-        return clawdbot_path
-    return None
-
-
-def ensure_moltbot_installed():
-    """Ensure Moltbot dependencies are installed"""
-    install_script = "/app/backend/install_moltbot_deps.sh"
-
-    # Check if clawdbot is available
-    clawdbot_cmd = get_clawdbot_command()
-    if clawdbot_cmd:
-        logger.info(f"Clawdbot found at: {clawdbot_cmd}")
-        return True
-
-    # Run installation script if available
-    if os.path.exists(install_script):
-        logger.info("Clawdbot not found, running installation script...")
-        try:
-            result = subprocess.run(
-                ["bash", install_script],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result.returncode == 0:
-                logger.info("Moltbot dependencies installed successfully")
-                return True
-            else:
-                logger.error(f"Installation failed: {result.stderr}")
-                return False
-        except Exception as e:
-            logger.error(f"Installation script error: {e}")
-            return False
-
-    logger.error("Clawdbot not found and no installation script available")
-    return False
-
-
-def generate_token():
-    """Generate a random gateway token"""
-    return secrets.token_hex(32)
-
-
-def create_moltbot_config(token: str = None, api_key: str = None, provider: str = "emergent", force_new_token: bool = False):
-    """Update clawdbot.json with gateway config and provider settings
-
-    Args:
-        token: Optional token. If not provided, reuses existing or generates new.
-        api_key: Optional API key for provider.
-        provider: The LLM provider - "emergent", "openai", or "anthropic".
-        force_new_token: If True, always generates a new token (triggers gateway restart).
-
-    Returns:
-        The token being used (existing or new).
-    """
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
-
-    # Load existing config if present
-    existing_config = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                existing_config = json.load(f)
-        except:
-            pass
-
-    # Reuse existing token if available (to avoid triggering gateway restart)
-    existing_token = None
-    if not force_new_token:
-        try:
-            existing_token = existing_config.get("gateway", {}).get("auth", {}).get("token")
-        except:
-            pass
-
-    # Use existing token, provided token, or generate new
-    final_token = existing_token or token or generate_token()
-
-    logger.info(f"Config token: {'reusing existing' if existing_token else 'new token'}, provider: {provider}")
-
-    # Gateway config to merge
-    gateway_config = {
-        "mode": "local",
-        "port": MOLTBOT_PORT,
-        "bind": "lan",
-        "auth": {
-            "mode": "token",
-            "token": final_token
-        },
-        "controlUi": {
-            "enabled": True,
-            "allowInsecureAuth": True
-        }
+async def search_binance_academy(query: str) -> list:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
     }
+    results = []
 
-    # Merge config - preserve existing settings, update gateway
-    existing_config["gateway"] = gateway_config
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
+            resp = await http.get(ACADEMY_BASE, headers=headers)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'lxml')
+                seen = set()
+                for a in soup.find_all('a', href=True):
+                    href = a.get('href', '')
+                    if '/academy/articles/' in href:
+                        text = a.get_text(strip=True)
+                        if text and len(text) > 5 and text not in seen:
+                            seen.add(text)
+                            full_url = href if href.startswith('http') else f"https://www.binance.com{href}"
+                            results.append({"title": text, "url": full_url})
+    except Exception as e:
+        logger.error(f"Academy scrape error: {e}")
 
-    # Ensure models section exists with merge mode
-    if "models" not in existing_config:
-        existing_config["models"] = {"mode": "merge", "providers": {}}
-    existing_config["models"]["mode"] = "merge"
-    if "providers" not in existing_config["models"]:
-        existing_config["models"]["providers"] = {}
+    query_lower = query.lower().split()
+    filtered = [r for r in results if any(w in r['title'].lower() for w in query_lower)]
 
-    # Ensure agents defaults section exists
-    if "agents" not in existing_config:
-        existing_config["agents"] = {"defaults": {}}
-    if "defaults" not in existing_config["agents"]:
-        existing_config["agents"]["defaults"] = {}
-    existing_config["agents"]["defaults"]["workspace"] = WORKSPACE_DIR
-
-    # Configure providers based on selection
-    if provider == "emergent":
-        # Use Emergent's proxy for both GPT and Claude
-        emergent_key = api_key or os.environ.get('EMERGENT_API_KEY', 'sk-emergent-1234')
-        emergent_base_url = os.environ.get('EMERGENT_BASE_URL', 'https://integrations.emergentagent.com/llm')
-
-        # Emergent GPT provider (openai-completions API)
-        emergent_gpt_provider = {
-            "baseUrl": f"{emergent_base_url}/",
-            "apiKey": emergent_key,
-            "api": "openai-completions",
-            "models": [
-                {
-                    "id": "gpt-5.2",
-                    "name": "GPT-5.2",
-                    "reasoning": True,
-                    "input": ["text"],
-                    "cost": {
-                        "input": 0.00000175,
-                        "output": 0.000014,
-                        "cacheRead": 0.000000175,
-                        "cacheWrite": 0.00000175
-                    },
-                    "contextWindow": 400000,
-                    "maxTokens": 128000
-                }
-            ]
-        }
-
-        # Emergent Claude provider (anthropic-messages API with authHeader)
-        emergent_claude_provider = {
-            "baseUrl": emergent_base_url,
-            "apiKey": emergent_key,
-            "api": "anthropic-messages",
-            "authHeader": True,
-            "models": [
-                {
-                    "id": "claude-sonnet-4-5",
-                    "name": "Claude Sonnet 4.5",
-                    "input": ["text"],
-                    "cost": {"input": 0.000003, "output": 0.000015, "cacheRead": 0.0000003, "cacheWrite": 0.00000375},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                },
-                {
-                    "id": "claude-opus-4-5",
-                    "name": "Claude Opus 4.5",
-                    "input": ["text"],
-                    "cost": {"input": 0.000005, "output": 0.000025, "cacheRead": 0.0000005, "cacheWrite": 0.00000625},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["emergent-gpt"] = emergent_gpt_provider
-        existing_config["models"]["providers"]["emergent-claude"] = emergent_claude_provider
-
-        # Set primary model to Claude Sonnet
-        existing_config["agents"]["defaults"]["models"] = {
-            "emergent-gpt/gpt-5.2": {"alias": "gpt-5.2"},
-            "emergent-claude/claude-sonnet-4-5": {"alias": "sonnet"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "emergent-claude/claude-sonnet-4-5"
-        }
-
-    elif provider == "openai":
-        # Direct OpenAI API with user's own key
-        openai_provider = {
-            "baseUrl": "https://api.openai.com/v1/",
-            "apiKey": api_key,
-            "api": "openai-completions",
-            "models": [
-                {
-                    "id": "gpt-5.2",
-                    "name": "GPT-5.2",
-                    "reasoning": True,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.00000175,
-                        "output": 0.000014,
-                        "cacheRead": 0.000000175,
-                        "cacheWrite": 0.00000175
-                    },
-                    "contextWindow": 400000,
-                    "maxTokens": 128000
-                },
-                {
-                    "id": "o4-mini-2025-04-16",
-                    "name": "o4-mini",
-                    "reasoning": True,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.0000011,
-                        "output": 0.0000044
-                    },
-                    "contextWindow": 200000,
-                    "maxTokens": 100000
-                },
-                {
-                    "id": "gpt-4o",
-                    "name": "GPT-4o",
-                    "reasoning": False,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.0000025,
-                        "output": 0.00001
-                    },
-                    "contextWindow": 128000,
-                    "maxTokens": 16384
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["openai"] = openai_provider
-
-        # Set primary model to GPT-5.2
-        existing_config["agents"]["defaults"]["models"] = {
-            "openai/gpt-5.2": {"alias": "gpt-5.2"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "openai/gpt-5.2"
-        }
-
-    elif provider == "anthropic":
-        # Direct Anthropic API with user's own key
-        anthropic_provider = {
-            "baseUrl": "https://api.anthropic.com",
-            "apiKey": api_key,
-            "api": "anthropic-messages",
-            "models": [
-                {
-                    "id": "claude-opus-4-5-20251101",
-                    "name": "Claude Opus 4.5",
-                    "input": ["text", "image"],
-                    "cost": {"input": 0.000015, "output": 0.000075, "cacheRead": 0.0000015, "cacheWrite": 0.00001875},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["anthropic"] = anthropic_provider
-
-        # Set primary model to Claude Opus 4.5
-        existing_config["agents"]["defaults"]["models"] = {
-            "anthropic/claude-opus-4-5-20251101": {"alias": "opus"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "anthropic/claude-opus-4-5-20251101"
-        }
-
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(existing_config, f, indent=2)
-
-    logger.info(f"Updated Moltbot config at {CONFIG_FILE} for provider: {provider}")
-    return final_token  # Return the token being used
-
-
-async def start_gateway_process(api_key: str, provider: str, owner_user_id: str):
-    """Start the Moltbot gateway process via supervisor (persistent, survives backend restarts)"""
-    global gateway_state
-
-    # Check if already running via supervisor
-    if SupervisorClient.status():
-        logger.info("Gateway already running via supervisor, recovering state...")
-
-        # Recover token from config
-        token = None
+    if not filtered and EMERGENT_LLM_KEY:
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            token = config.get("gateway", {}).get("auth", {}).get("token")
-        except:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"search-{uuid.uuid4().hex[:8]}",
+                system_message="You suggest Binance Academy article topics. Return ONLY a JSON array."
+            ).with_model("openai", "gpt-4o")
+
+            resp = await chat.send_message(UserMessage(
+                text=f'Suggest 8 Binance Academy article topics related to "{query}". Return JSON array: [{{"title":"What Is Bitcoin?","url":"https://www.binance.com/en/academy/articles/what-is-bitcoin"}}]'
+            ))
+            match = re.search(r'\[.*\]', resp, re.DOTALL)
+            if match:
+                filtered = json.loads(match.group())[:8]
+        except Exception as e:
+            logger.error(f"LLM search error: {e}")
+
+    return filtered[:15] if filtered else results[:15]
+
+
+async def fetch_article_content(url: str) -> dict:
+    if url in ARTICLE_CACHE:
+        return ARTICLE_CACHE[url]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    }
+    title = ""
+    content = ""
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
+            resp = await http.get(url, headers=headers)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'lxml')
+                h1 = soup.find('h1')
+                if h1:
+                    title = h1.get_text(strip=True)
+                for sel in ['article', 'div[class*="article"]', 'div[class*="content"]', 'main']:
+                    elem = soup.select_one(sel)
+                    if elem:
+                        paras = elem.find_all(['p', 'h2', 'h3', 'h4', 'li'])
+                        content = "\n".join(p.get_text(strip=True) for p in paras if p.get_text(strip=True))
+                        if len(content) > 200:
+                            break
+                if len(content) < 200:
+                    paras = soup.find_all('p')
+                    content = "\n".join(p.get_text(strip=True) for p in paras[:50] if p.get_text(strip=True))
+    except Exception as e:
+        logger.error(f"Article fetch error: {e}")
+
+    if len(content) < 100 and EMERGENT_LLM_KEY:
+        topic = url.split('/')[-1].replace('-', ' ').title()
+        if not title:
+            title = topic
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"content-{uuid.uuid4().hex[:8]}",
+                system_message="You write educational crypto articles in Binance Academy style."
+            ).with_model("openai", "gpt-4o")
+            resp_text = await chat.send_message(UserMessage(
+                text=f"Write a comprehensive educational article about '{title}' covering key concepts, how it works, and importance in crypto. About 800 words."
+            ))
+            content = resp_text
+        except Exception as e:
+            logger.error(f"LLM content error: {e}")
+
+    result = {"title": title or url.split('/')[-1].replace('-', ' ').title(), "content": content[:6000], "url": url}
+    ARTICLE_CACHE[url] = result
+    return result
+
+
+# ============== Quiz Generation ==============
+
+async def generate_quiz_questions(article_title: str, article_content: str, num_questions: int = 10) -> list:
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"quiz-{uuid.uuid4().hex[:8]}",
+        system_message="You generate quiz questions. Return ONLY valid JSON arrays."
+    ).with_model("openai", "gpt-4o")
+
+    prompt = f"""Generate {num_questions} multiple choice quiz questions from this Binance Academy article.
+
+Title: "{article_title}"
+Content: {article_content[:4500]}
+
+Return ONLY a JSON array:
+[{{"question":"What is...?","options":["A","B","C","D"],"correct":0,"explanation":"Because..."}}]
+
+Rules: exactly 4 options, correct is 0-based index, questions under 120 chars, options under 60 chars."""
+
+    response = await chat.send_message(UserMessage(text=prompt))
+
+    try:
+        cleaned = response.strip()
+        if cleaned.startswith('```'):
+            cleaned = re.sub(r'^```\w*\n?', '', cleaned)
+            cleaned = re.sub(r'\n?```$', '', cleaned)
+        match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+        questions = json.loads(match.group()) if match else json.loads(cleaned)
+
+        validated = []
+        for q in questions:
+            if (isinstance(q, dict) and
+                all(k in q for k in ['question', 'options', 'correct', 'explanation']) and
+                isinstance(q['options'], list) and len(q['options']) == 4 and
+                isinstance(q['correct'], int) and 0 <= q['correct'] <= 3):
+                validated.append({
+                    "question": str(q['question']),
+                    "options": [str(o) for o in q['options']],
+                    "correct": int(q['correct']),
+                    "explanation": str(q.get('explanation', ''))
+                })
+        if not validated:
+            raise ValueError("No valid questions")
+        return validated[:num_questions]
+    except Exception as e:
+        logger.error(f"Quiz parse error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate quiz. Please try again.")
+
+
+# ============== WebSocket Game Engine ==============
+
+active_games: Dict[str, dict] = {}
+
+async def broadcast(code: str, message: dict):
+    if code not in active_games:
+        return
+    game = active_games[code]
+    data = json.dumps(message)
+    if game.get("host_ws"):
+        try:
+            await game["host_ws"].send_text(data)
+        except Exception:
             pass
-
-        if not token:
-            token = generate_token()
-            create_moltbot_config(token=token, api_key=api_key, provider=provider, force_new_token=True)
-
-        gateway_state["token"] = token
-        gateway_state["provider"] = provider
-        gateway_state["started_at"] = datetime.now(timezone.utc).isoformat()
-        gateway_state["owner_user_id"] = owner_user_id
-
-        # Update database
-        await db.moltbot_configs.update_one(
-            {"_id": "gateway_config"},
-            {
-                "$set": {
-                    "should_run": True,
-                    "owner_user_id": owner_user_id,
-                    "provider": provider,
-                    "token": token,
-                    "started_at": gateway_state["started_at"],
-                    "updated_at": datetime.now(timezone.utc)
-                }
-            },
-            upsert=True
-        )
-
-        return token
-
-    # Ensure clawdbot is installed
-    clawdbot_cmd = get_clawdbot_command()
-    if not clawdbot_cmd:
-        if not ensure_moltbot_installed():
-            raise HTTPException(status_code=500, detail="OpenClaw (clawdbot) is not installed. Please contact support.")
-        clawdbot_cmd = get_clawdbot_command()
-        if not clawdbot_cmd:
-            raise HTTPException(status_code=500, detail="Failed to find clawdbot after installation")
-
-    # Create config (reuses existing token to avoid gateway restarts)
-    token = create_moltbot_config(api_key=api_key, provider=provider)
-
-    # Write environment file for supervisor wrapper to load
-    write_gateway_env(token=token, api_key=api_key, provider=provider)
-
-    logger.info(f"Starting Moltbot gateway via supervisor on port {MOLTBOT_PORT}...")
-
-    # Start via supervisor (will auto-restart on crash, survives backend restarts)
-    if not SupervisorClient.start():
-        raise HTTPException(status_code=500, detail="Failed to start gateway via supervisor")
-
-    # Update in-memory state
-    gateway_state["token"] = token
-    gateway_state["provider"] = provider
-    gateway_state["started_at"] = datetime.now(timezone.utc).isoformat()
-    gateway_state["owner_user_id"] = owner_user_id
-
-    # Wait for gateway to be ready
-    max_wait = 60
-    start_time = asyncio.get_event_loop().time()
-
-    async with httpx.AsyncClient() as http_client:
-        while asyncio.get_event_loop().time() - start_time < max_wait:
+    for pid, info in list(game.get("players", {}).items()):
+        if info.get("ws"):
             try:
-                response = await http_client.get(f"http://127.0.0.1:{MOLTBOT_PORT}/", timeout=2.0)
-                if response.status_code == 200:
-                    logger.info("Moltbot gateway is ready!")
-
-                    # Store config in database for persistence (with should_run flag)
-                    await db.moltbot_configs.update_one(
-                        {"_id": "gateway_config"},
-                        {
-                            "$set": {
-                                "should_run": True,
-                                "owner_user_id": owner_user_id,
-                                "provider": provider,
-                                "token": token,
-                                "started_at": gateway_state["started_at"],
-                                "updated_at": datetime.now(timezone.utc)
-                            }
-                        },
-                        upsert=True
-                    )
-
-                    return token
+                await info["ws"].send_text(data)
             except Exception:
                 pass
-            await asyncio.sleep(1)
-
-    # Check supervisor status if not ready
-    if not SupervisorClient.status():
-        raise HTTPException(status_code=500, detail="Gateway failed to start via supervisor")
-
-    raise HTTPException(status_code=500, detail="Gateway did not become ready in time")
 
 
-def check_gateway_running():
-    """Check if the gateway process is still running via supervisor"""
-    return SupervisorClient.status()
-
-
-# ============== Moltbot API Endpoints (Protected) ==============
-
-@api_router.get("/")
-async def root():
-    return {"message": "OpenClaw Hosting API"}
-
-
-@api_router.post("/openclaw/start", response_model=OpenClawStartResponse)
-async def start_moltbot(request: OpenClawStartRequest, req: Request):
-    """Start the Moltbot gateway with Emergent provider (requires auth)"""
-    user = await require_auth(req)
-
-    if request.provider not in ["emergent", "anthropic", "openai"]:
-        raise HTTPException(status_code=400, detail="Invalid provider. Use 'emergent', 'anthropic', or 'openai'")
-
-    # For non-emergent providers, API key is required
-    if request.provider in ["anthropic", "openai"] and (not request.apiKey or len(request.apiKey) < 10):
-        raise HTTPException(status_code=400, detail="API key required for anthropic/openai providers")
-
-    # Check if Moltbot is already running by another user
-    if check_gateway_running() and gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="OpenClaw is already running by another user. Please wait for them to stop it."
-        )
-
+async def run_timer(code: str, qi: int, duration: int = 20):
     try:
-        token = await start_gateway_process(request.apiKey, request.provider, user.user_id)
-
-        # Lock the instance to this user on first successful start
-        await set_instance_owner(user)
-        logger.info(f"Instance locked to user: {user.email}")
-
-        return OpenClawStartResponse(
-            ok=True,
-            controlUrl="/api/openclaw/ui/",
-            token=token,
-            message="OpenClaw started successfully with Emergent provider"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to start Moltbot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        for rem in range(duration, 0, -1):
+            await asyncio.sleep(1)
+            if code not in active_games:
+                return
+            await broadcast(code, {"type": "timer", "seconds": rem})
+        await calculate_results(code, qi)
+    except asyncio.CancelledError:
+        pass
 
 
-@api_router.get("/openclaw/status", response_model=OpenClawStatusResponse)
-async def get_moltbot_status(request: Request):
-    """Get the current status of the Moltbot gateway"""
-    user = await get_current_user(request)
-    running = check_gateway_running()
-
-    if running:
-        is_owner = user and gateway_state["owner_user_id"] == user.user_id
-        return OpenClawStatusResponse(
-            running=True,
-            pid=SupervisorClient.get_pid(),
-            provider=gateway_state["provider"],
-            started_at=gateway_state["started_at"],
-            controlUrl="/api/openclaw/ui/",
-            owner_user_id=gateway_state["owner_user_id"],
-            is_owner=is_owner
-        )
-    else:
-        return OpenClawStatusResponse(running=False)
-
-
-@api_router.get("/openclaw/whatsapp/status")
-async def get_whatsapp_connection_status():
-    """Get basic WhatsApp connection status. Auto-fix handled by background watcher."""
-    return get_whatsapp_status()
-
-
-@api_router.post("/openclaw/stop")
-async def stop_moltbot(request: Request):
-    """Stop the Moltbot gateway (only owner can stop)"""
-    user = await require_auth(request)
-
-    global gateway_state
-
-    if not check_gateway_running():
-        # Clear should_run flag even if not running
-        await db.moltbot_configs.update_one(
-            {"_id": "gateway_config"},
-            {"$set": {"should_run": False, "updated_at": datetime.now(timezone.utc)}}
-        )
-        return {"ok": True, "message": "OpenClaw is not running"}
-
-    # Check if user is the owner
-    if gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the owner can stop OpenClaw")
-
-    # Stop via supervisor
-    if not SupervisorClient.stop():
-        logger.error("Failed to stop gateway via supervisor")
-
-    # Clear the gateway env file
-    clear_gateway_env()
-
-    # Clear should_run flag in database
-    await db.moltbot_configs.update_one(
-        {"_id": "gateway_config"},
-        {"$set": {"should_run": False, "updated_at": datetime.now(timezone.utc)}}
-    )
-
-    # Clear in-memory state
-    gateway_state["token"] = None
-    gateway_state["provider"] = None
-    gateway_state["started_at"] = None
-    gateway_state["owner_user_id"] = None
-
-    return {"ok": True, "message": "OpenClaw stopped"}
-
-
-@api_router.get("/openclaw/token")
-async def get_moltbot_token(request: Request):
-    """Get the current gateway token for authentication (only owner)"""
-    user = await require_auth(request)
-
-    if not check_gateway_running():
-        raise HTTPException(status_code=404, detail="OpenClaw not running")
-
-    # Only owner can get the token
-    if gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the owner can access the token")
-
-    return {"token": gateway_state.get("token")}
-
-
-# ============== Moltbot Proxy (Protected) ==============
-
-@api_router.api_route("/openclaw/ui/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def proxy_moltbot_ui(request: Request, path: str = ""):
-    """Proxy requests to the Moltbot Control UI (only owner can access)"""
-    user = await get_current_user(request)
-
-    if not check_gateway_running():
-        return HTMLResponse(
-            content="<html><body><h1>OpenClaw not running</h1><p>Please start OpenClaw first.</p><a href='/'>Go to setup</a></body></html>",
-            status_code=503
-        )
-
-    # Check if user is the owner
-    if not user or gateway_state["owner_user_id"] != user.user_id:
-        return HTMLResponse(
-            content="<html><body><h1>Access Denied</h1><p>This OpenClaw instance is owned by another user.</p><a href='/'>Go back</a></body></html>",
-            status_code=403
-        )
-
-    target_url = f"http://127.0.0.1:{MOLTBOT_PORT}/{path}"
-
-    # Handle query string
-    if request.query_params:
-        target_url += f"?{request.query_params}"
-
-    async with httpx.AsyncClient() as client:
-        try:
-            # Forward the request
-            headers = dict(request.headers)
-            headers.pop("host", None)
-            headers.pop("content-length", None)
-
-            body = await request.body()
-
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body,
-                timeout=30.0
-            )
-
-            # Filter response headers
-            exclude_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
-            response_headers = {
-                k: v for k, v in response.headers.items()
-                if k.lower() not in exclude_headers
-            }
-
-            # Get content and rewrite WebSocket URLs if HTML
-            content = response.content
-            content_type = response.headers.get("content-type", "")
-
-            # Get the current gateway token
-            current_token = gateway_state.get("token", "")
-
-            # If it's HTML, rewrite any WebSocket URLs to use our proxy
-            if "text/html" in content_type:
-                content_str = content.decode('utf-8', errors='ignore')
-                # Inject WebSocket URL override script with token
-                ws_override = f'''
-<script>
-// OpenClaw Proxy Configuration
-window.__MOLTBOT_PROXY_TOKEN__ = "{current_token}";
-window.__MOLTBOT_PROXY_WS_URL__ = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host + '/api/openclaw/ws';
-
-// Override WebSocket to use proxy path
-(function() {{
-    const originalWS = window.WebSocket;
-    const proxyWsUrl = window.__MOLTBOT_PROXY_WS_URL__;
-
-    window.WebSocket = function(url, protocols) {{
-        let finalUrl = url;
-
-        // Rewrite any OpenClaw gateway URLs to use our proxy
-        if (url.includes('127.0.0.1:18789') ||
-            url.includes('localhost:18789') ||
-            url.includes('0.0.0.0:18789') ||
-            (url.includes(':18789') && !url.includes('/api/openclaw/'))) {{
-            finalUrl = proxyWsUrl;
-        }}
-
-        // If it's a relative URL or same-origin, redirect to proxy
-        try {{
-            const urlObj = new URL(url, window.location.origin);
-            if (urlObj.port === '18789' || urlObj.pathname === '/' && !url.startsWith(proxyWsUrl)) {{
-                finalUrl = proxyWsUrl;
-            }}
-        }} catch (e) {{}}
-
-        console.log('[OpenClaw Proxy] WebSocket:', url, '->', finalUrl);
-        return new originalWS(finalUrl, protocols);
-    }};
-
-    // Copy static properties
-    window.WebSocket.prototype = originalWS.prototype;
-    window.WebSocket.CONNECTING = originalWS.CONNECTING;
-    window.WebSocket.OPEN = originalWS.OPEN;
-    window.WebSocket.CLOSING = originalWS.CLOSING;
-    window.WebSocket.CLOSED = originalWS.CLOSED;
-}})();
-</script>
-'''
-                # Insert before </head> or at start of <body>
-                if '</head>' in content_str:
-                    content_str = content_str.replace('</head>', ws_override + '</head>')
-                elif '<body>' in content_str:
-                    content_str = content_str.replace('<body>', '<body>' + ws_override)
-                else:
-                    content_str = ws_override + content_str
-                content = content_str.encode('utf-8')
-
-            return Response(
-                content=content,
-                status_code=response.status_code,
-                headers=response_headers,
-                media_type=response.headers.get("content-type")
-            )
-        except httpx.RequestError as e:
-            logger.error(f"Proxy error: {e}")
-            raise HTTPException(status_code=502, detail="Failed to connect to OpenClaw")
-
-
-# Root proxy for Moltbot UI (handles /api/moltbot/ui without trailing path)
-@api_router.get("/openclaw/ui")
-async def proxy_moltbot_ui_root(request: Request):
-    """Redirect to Moltbot UI with trailing slash"""
-    return Response(
-        status_code=307,
-        headers={"Location": "/api/openclaw/ui/"}
-    )
-
-
-# WebSocket proxy for Moltbot (Protected)
-@api_router.websocket("/openclaw/ws")
-async def websocket_proxy(websocket: WebSocket):
-    """WebSocket proxy for Moltbot Control UI"""
-    await websocket.accept()
-
-    if not check_gateway_running():
-        await websocket.close(code=1013, reason="OpenClaw not running")
+async def calculate_results(code: str, qi: int):
+    session = await db.sessions.find_one({"code": code}, {"_id": 0})
+    if not session:
+        return
+    questions = session.get("questions", [])
+    if qi >= len(questions):
         return
 
-    # Note: WebSocket auth is handled by the token in the connection itself
-    # The Control UI passes the token in the connect message
+    correct_idx = questions[qi]["correct"]
+    explanation = questions[qi].get("explanation", "")
+    players = await db.players.find({"session_code": code}, {"_id": 0}).to_list(100)
 
-    # Get the token from state
-    token = gateway_state.get("token")
+    scores = []
+    for p in players:
+        ans = next((a for a in p.get("answers", []) if a.get("question_index") == qi), None)
+        delta = 0
+        is_correct = False
+        if ans and ans.get("option") == correct_idx:
+            is_correct = True
+            time_ms = ans.get("time_ms", 20000)
+            delta = max(500, 1000 - int(time_ms / 20))
+            await db.players.update_one(
+                {"session_code": code, "player_id": p["player_id"]},
+                {"$inc": {"score": delta}}
+            )
+        scores.append({
+            "player_id": p["player_id"],
+            "nickname": p["nickname"],
+            "score": p.get("score", 0) + delta,
+            "delta": delta,
+            "is_correct": is_correct,
+            "answered": ans is not None
+        })
 
-    # Moltbot expects WebSocket connection with optional auth in query params
-    moltbot_ws_url = f"ws://127.0.0.1:{MOLTBOT_PORT}/"
+    scores.sort(key=lambda x: x["score"], reverse=True)
+    for i, s in enumerate(scores):
+        s["rank"] = i + 1
 
-    logger.info(f"WebSocket proxy connecting to: {moltbot_ws_url}")
+    await broadcast(code, {
+        "type": "answer_result",
+        "question_index": qi,
+        "correct": correct_idx,
+        "explanation": explanation,
+        "scores": scores
+    })
+
+    if qi >= len(questions) - 1:
+        await asyncio.sleep(3)
+        await broadcast(code, {"type": "game_over", "final_standings": scores})
+        await db.sessions.update_one({"code": code}, {"$set": {"status": "finished"}})
+
+
+# ============== API Endpoints ==============
+
+@api_router.get("/health")
+async def health():
+    return {"status": "ok", "service": "CryptoQuiz"}
+
+@api_router.get("/academy/search")
+async def search_academy(q: str = Query(..., min_length=1)):
+    results = await search_binance_academy(q)
+    return {"results": results, "query": q}
+
+@api_router.post("/academy/article")
+async def get_article(req: ArticleFetchRequest):
+    return await fetch_article_content(req.url)
+
+@api_router.post("/quiz/generate")
+async def generate_quiz(req: GenerateQuizRequest):
+    questions = await generate_quiz_questions(req.article_title, req.article_content, req.num_questions)
+    quiz_id = f"quiz_{secrets.token_hex(8)}"
+    doc = {
+        "quiz_id": quiz_id,
+        "article_title": req.article_title,
+        "article_url": req.article_url,
+        "questions": questions,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.quizzes.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.post("/session/create")
+async def create_session(req: CreateSessionRequest):
+    quiz = await db.quizzes.find_one({"quiz_id": req.quiz_id}, {"_id": 0})
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    code = secrets.token_hex(4).upper()
+    slug = f"q-{secrets.token_urlsafe(8)}"
+
+    doc = {
+        "code": code,
+        "slug": slug,
+        "host_name": req.host_name,
+        "quiz_id": req.quiz_id,
+        "article_title": quiz["article_title"],
+        "questions": quiz["questions"],
+        "status": "waiting",
+        "current_question": -1,
+        "duration": 20,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.sessions.insert_one(doc)
+    doc.pop("_id", None)
+
+    active_games[code] = {"host_ws": None, "players": {}, "timer_task": None}
+    return {"code": code, "slug": slug, "session": doc}
+
+@api_router.post("/session/join")
+async def join_session(req: JoinSessionRequest):
+    code = req.code.strip().upper()
+    session = await db.sessions.find_one(
+        {"code": code, "status": {"$in": ["waiting", "playing"]}},
+        {"_id": 0}
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Game not found or already finished")
+
+    pid = f"p_{secrets.token_hex(6)}"
+    doc = {
+        "player_id": pid,
+        "session_code": code,
+        "nickname": req.nickname[:20],
+        "score": 0,
+        "answers": [],
+        "joined_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.players.insert_one(doc)
+    doc.pop("_id", None)
+
+    safe_session = {k: v for k, v in session.items() if k != "questions"}
+    safe_session["total_questions"] = len(session.get("questions", []))
+    return {"player_id": pid, "session": safe_session}
+
+@api_router.get("/session/{code}")
+async def get_session(code: str):
+    session = await db.sessions.find_one({"code": code.upper()}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    safe = {k: v for k, v in session.items() if k != "questions"}
+    safe["total_questions"] = len(session.get("questions", []))
+    players = await db.players.find(
+        {"session_code": code.upper()}, {"_id": 0, "answers": 0}
+    ).to_list(100)
+    safe["players"] = players
+    return safe
+
+@api_router.get("/session/{code}/players")
+async def get_players(code: str):
+    players = await db.players.find(
+        {"session_code": code.upper()}, {"_id": 0, "answers": 0}
+    ).to_list(100)
+    return {"players": players}
+
+@api_router.post("/quiz/solo")
+async def generate_solo_quiz(req: GenerateQuizRequest):
+    questions = await generate_quiz_questions(req.article_title, req.article_content, req.num_questions)
+    return {
+        "quiz_id": f"solo_{secrets.token_hex(8)}",
+        "article_title": req.article_title,
+        "questions": questions
+    }
+
+
+# ============== WebSocket ==============
+
+@api_router.websocket("/ws/{code}/{player_id}")
+async def ws_endpoint(websocket: WebSocket, code: str, player_id: str):
+    code = code.upper()
+    await websocket.accept()
+
+    is_host = player_id.startswith("host_")
+
+    if code not in active_games:
+        active_games[code] = {"host_ws": None, "players": {}, "timer_task": None}
+    game = active_games[code]
+
+    if is_host:
+        game["host_ws"] = websocket
+    else:
+        nickname = ""
+        player = await db.players.find_one({"player_id": player_id, "session_code": code}, {"_id": 0})
+        if player:
+            nickname = player.get("nickname", "")
+        game["players"][player_id] = {"ws": websocket, "nickname": nickname}
+
+        all_p = await db.players.find({"session_code": code}, {"_id": 0, "answers": 0}).to_list(100)
+        await broadcast(code, {
+            "type": "player_joined",
+            "player": {"id": player_id, "nickname": nickname},
+            "player_count": len(all_p),
+            "players": all_p
+        })
 
     try:
-        # Additional headers for connection
-        extra_headers = {}
-        if token:
-            extra_headers["X-Auth-Token"] = token
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
 
-        async with websockets.connect(
-            moltbot_ws_url,
-            ping_interval=20,
-            ping_timeout=20,
-            close_timeout=10,
-            additional_headers=extra_headers if extra_headers else None
-        ) as moltbot_ws:
+            if msg["type"] == "start_game" and is_host:
+                await db.sessions.update_one(
+                    {"code": code},
+                    {"$set": {"status": "playing", "current_question": 0}}
+                )
+                session = await db.sessions.find_one({"code": code}, {"_id": 0})
+                qs = session.get("questions", [])
+                if qs:
+                    await broadcast(code, {"type": "game_starting", "total_questions": len(qs)})
+                    await asyncio.sleep(2)
+                    q = qs[0]
+                    await broadcast(code, {
+                        "type": "question", "index": 0, "total": len(qs),
+                        "question": q["question"], "options": q["options"],
+                        "duration": session.get("duration", 20)
+                    })
+                    if game.get("timer_task"):
+                        game["timer_task"].cancel()
+                    game["timer_task"] = asyncio.create_task(
+                        run_timer(code, 0, session.get("duration", 20))
+                    )
 
-            async def client_to_moltbot():
-                try:
-                    while True:
-                        try:
-                            data = await websocket.receive()
-                            if data["type"] == "websocket.receive":
-                                if "text" in data:
-                                    await moltbot_ws.send(data["text"])
-                                elif "bytes" in data:
-                                    await moltbot_ws.send(data["bytes"])
-                            elif data["type"] == "websocket.disconnect":
-                                break
-                        except WebSocketDisconnect:
-                            break
-                except Exception as e:
-                    logger.error(f"Client to Moltbot error: {e}")
+            elif msg["type"] == "next_question" and is_host:
+                session = await db.sessions.find_one({"code": code}, {"_id": 0})
+                qi = session.get("current_question", 0) + 1
+                qs = session.get("questions", [])
+                if qi < len(qs):
+                    await db.sessions.update_one({"code": code}, {"$set": {"current_question": qi}})
+                    q = qs[qi]
+                    await broadcast(code, {
+                        "type": "question", "index": qi, "total": len(qs),
+                        "question": q["question"], "options": q["options"],
+                        "duration": session.get("duration", 20)
+                    })
+                    if game.get("timer_task"):
+                        game["timer_task"].cancel()
+                    game["timer_task"] = asyncio.create_task(
+                        run_timer(code, qi, session.get("duration", 20))
+                    )
 
-            async def moltbot_to_client():
-                try:
-                    async for message in moltbot_ws:
-                        if websocket.client_state == WebSocketState.CONNECTED:
-                            if isinstance(message, str):
-                                await websocket.send_text(message)
-                            else:
-                                await websocket.send_bytes(message)
-                except ConnectionClosed as e:
-                    logger.info(f"Moltbot WebSocket closed: {e}")
-                except Exception as e:
-                    logger.error(f"Moltbot to client error: {e}")
+            elif msg["type"] == "answer" and not is_host:
+                option = msg.get("option")
+                time_ms = msg.get("time_ms", 20000)
+                session = await db.sessions.find_one({"code": code}, {"_id": 0})
+                qi = session.get("current_question", 0)
 
-            # Run both directions concurrently
-            done, pending = await asyncio.wait(
-                [
-                    asyncio.create_task(client_to_moltbot()),
-                    asyncio.create_task(moltbot_to_client())
-                ],
-                return_when=asyncio.FIRST_COMPLETED
-            )
+                player = await db.players.find_one(
+                    {"player_id": player_id, "session_code": code}, {"_id": 0}
+                )
+                already = any(a.get("question_index") == qi for a in player.get("answers", []))
+                if not already:
+                    await db.players.update_one(
+                        {"player_id": player_id, "session_code": code},
+                        {"$push": {"answers": {
+                            "question_index": qi, "option": option, "time_ms": time_ms
+                        }}}
+                    )
+                    total_p = await db.players.count_documents({"session_code": code})
+                    all_p = await db.players.find({"session_code": code}, {"_id": 0}).to_list(100)
+                    answered_count = sum(
+                        1 for p in all_p
+                        if any(a.get("question_index") == qi for a in p.get("answers", []))
+                    )
+                    await broadcast(code, {
+                        "type": "player_answered",
+                        "answered_count": answered_count,
+                        "total_players": total_p
+                    })
+                    if answered_count >= total_p:
+                        if game.get("timer_task"):
+                            game["timer_task"].cancel()
+                        await calculate_results(code, qi)
 
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-
+    except WebSocketDisconnect:
+        pass
     except Exception as e:
-        logger.error(f"WebSocket proxy error: {e}")
+        logger.error(f"WS error: {e}")
     finally:
-        try:
-            if websocket.client_state == WebSocketState.CONNECTED:
-                await websocket.close(code=1011, reason="Proxy connection ended")
-        except:
-            pass
+        if is_host:
+            game["host_ws"] = None
+        else:
+            game["players"].pop(player_id, None)
+            all_p = await db.players.find({"session_code": code}, {"_id": 0, "answers": 0}).to_list(100)
+            await broadcast(code, {
+                "type": "player_left",
+                "player_id": player_id,
+                "player_count": len(game.get("players", {})),
+                "players": all_p
+            })
 
 
-# ============== Legacy Status Endpoints ==============
+# ============== Telegram Bot ==============
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
+@api_router.post("/telegram/webhook")
+async def telegram_webhook(request: dict):
+    try:
+        message = request.get("message", {})
+        text = message.get("text", "")
+        chat_id = message.get("chat", {}).get("id")
+        if not chat_id:
+            return {"ok": True}
 
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
+        bot_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+        async with httpx.AsyncClient() as http:
+            if text.startswith("/start"):
+                parts = text.split()
+                join_code = parts[1] if len(parts) > 1 else None
+                webapp_url = f"{FRONTEND_URL}?join={join_code}" if join_code else FRONTEND_URL
+                await http.post(f"{bot_api}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Welcome to CryptoQuiz! Test your crypto knowledge with friends!",
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "Play Now", "web_app": {"url": webapp_url}}
+                    ]]}
+                })
+            elif text.startswith("/quiz"):
+                await http.post(f"{bot_api}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Create a new quiz from Binance Academy!",
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "Host a Quiz", "web_app": {"url": f"{FRONTEND_URL}/host"}}
+                    ]]}
+                })
+            elif text.startswith("/join"):
+                await http.post(f"{bot_api}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Join a quiz game!",
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "Join Game", "web_app": {"url": f"{FRONTEND_URL}/join"}}
+                    ]]}
+                })
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {e}")
+    return {"ok": True}
 
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+@api_router.post("/telegram/setup")
+async def setup_telegram():
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="No bot token")
+    bot_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    results = {}
+    async with httpx.AsyncClient() as http:
+        r = await http.post(f"{bot_api}/setMyCommands", json={
+            "commands": [
+                {"command": "start", "description": "Start CryptoQuiz"},
+                {"command": "quiz", "description": "Create a quiz"},
+                {"command": "join", "description": "Join a game"}
+            ]
+        })
+        results["commands"] = r.json()
+        if FRONTEND_URL:
+            r = await http.post(f"{bot_api}/setChatMenuButton", json={
+                "menu_button": {"type": "web_app", "text": "CryptoQuiz", "web_app": {"url": FRONTEND_URL}}
+            })
+            results["menu"] = r.json()
+            webhook_url = FRONTEND_URL.rstrip('/') + '/api/telegram/webhook'
+            r = await http.post(f"{bot_api}/setWebhook", json={
+                "url": webhook_url, "allowed_updates": ["message"]
+            })
+            results["webhook"] = r.json()
+    return results
 
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+# ============== App Setup ==============
 
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-
-    return status_checks
-
-
-# Include the router in the main app
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1146,129 +620,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Background task for auto-fixing WhatsApp
-whatsapp_watcher_task = None
-
-async def whatsapp_auto_fix_watcher():
-    """Auto-fix Baileys registered=false bug every 5 seconds."""
-    logger.info("[whatsapp-watcher] Background watcher started")
-    while True:
-        await asyncio.sleep(5)
-        try:
-            status = get_whatsapp_status()
-            logger.info(f"[whatsapp-watcher] Check: linked={status['linked']}, registered={status['registered']}, phone={status['phone']}")
-            if status["linked"] and not status["registered"]:
-                logger.info("[whatsapp-watcher] DETECTED registered=false, applying fix...")
-                if fix_registered_flag():
-                    logger.info("[whatsapp-watcher] Fix applied, restarting gateway via supervisor...")
-                    result = subprocess.run(["supervisorctl", "restart", "clawdbot-gateway"], capture_output=True, text=True)
-                    logger.info(f"[whatsapp-watcher] Supervisor restart result: {result.stdout} {result.stderr}")
-        except Exception as e:
-            logger.warning(f"[whatsapp-watcher] Error: {e}")
-
-
 @app.on_event("startup")
-async def startup_event():
-    """Run on server startup - ensure Moltbot dependencies are installed and auto-start gateway if needed"""
-    global whatsapp_watcher_task, gateway_state
+async def startup():
+    logger.info("CryptoQuiz starting...")
+    await db.sessions.create_index("code", unique=True)
+    await db.sessions.create_index("slug")
+    await db.players.create_index([("session_code", 1), ("player_id", 1)])
+    await db.quizzes.create_index("quiz_id", unique=True)
 
-    logger.info("Server starting up...")
-
-    # Reload supervisor config to pick up any changes
-    SupervisorClient.reload_config()
-
-    # Check and install Moltbot dependencies if needed
-    clawdbot_cmd = get_clawdbot_command()
-    if clawdbot_cmd:
-        logger.info(f"Moltbot dependencies ready: {clawdbot_cmd}")
-    else:
-        logger.info("Moltbot dependencies not found, will install on first use")
-
-    # Check database for persistent gateway config
-    config_doc = None
-    try:
-        config_doc = await db.moltbot_configs.find_one({"_id": "gateway_config"})
-    except Exception as e:
-        logger.warning(f"Could not read gateway config from database: {e}")
-
-    should_run = config_doc.get("should_run", False) if config_doc else False
-    logger.info(f"Gateway should_run flag: {should_run}")
-
-    # Check if gateway is already running via supervisor
-    if SupervisorClient.status():
-        pid = SupervisorClient.get_pid()
-        logger.info(f"Gateway already running via supervisor (PID: {pid})")
-
-        gateway_state["provider"] = config_doc.get("provider", "emergent") if config_doc else "emergent"
-
-        # Recover token from config file
+    if TELEGRAM_BOT_TOKEN and FRONTEND_URL:
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            gateway_state["token"] = config.get("gateway", {}).get("auth", {}).get("token")
-            logger.info("Recovered gateway token from config file")
+            bot_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+            async with httpx.AsyncClient() as http:
+                await http.post(f"{bot_api}/setMyCommands", json={
+                    "commands": [
+                        {"command": "start", "description": "Start CryptoQuiz"},
+                        {"command": "quiz", "description": "Create a quiz"},
+                        {"command": "join", "description": "Join a game"}
+                    ]
+                })
+                await http.post(f"{bot_api}/setChatMenuButton", json={
+                    "menu_button": {"type": "web_app", "text": "CryptoQuiz", "web_app": {"url": FRONTEND_URL}}
+                })
+                webhook_url = FRONTEND_URL.rstrip('/') + '/api/telegram/webhook'
+                await http.post(f"{bot_api}/setWebhook", json={
+                    "url": webhook_url, "allowed_updates": ["message"]
+                })
+            logger.info("Telegram bot configured")
         except Exception as e:
-            logger.warning(f"Could not recover gateway token: {e}")
-
-        # Recover owner info from database
-        if config_doc:
-            gateway_state["owner_user_id"] = config_doc.get("owner_user_id")
-            gateway_state["started_at"] = config_doc.get("started_at")
-            logger.info(f"Recovered gateway owner from database: {gateway_state['owner_user_id']}")
-
-    elif should_run and config_doc:
-        # Gateway should be running but isn't - auto-start it!
-        logger.info("Gateway should_run=True but not running - auto-starting via supervisor...")
-
-        # Recover token from config file or database
-        token = config_doc.get("token")
-        if not token:
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                token = config.get("gateway", {}).get("auth", {}).get("token")
-            except:
-                token = generate_token()
-
-        # Write env file for supervisor wrapper
-        write_gateway_env(token=token, provider=config_doc.get("provider", "emergent"))
-
-        # Start via supervisor
-        if SupervisorClient.start():
-            logger.info("Gateway auto-started successfully via supervisor")
-
-            # Wait briefly for it to be ready
-            await asyncio.sleep(3)
-
-            gateway_state["token"] = token
-            gateway_state["provider"] = config_doc.get("provider", "emergent")
-            gateway_state["owner_user_id"] = config_doc.get("owner_user_id")
-            gateway_state["started_at"] = config_doc.get("started_at")
-        else:
-            logger.error("Failed to auto-start gateway via supervisor")
-
-    # Start WhatsApp auto-fix background watcher
-    whatsapp_watcher_task = asyncio.create_task(whatsapp_auto_fix_watcher())
-    logger.info("[whatsapp-watcher] Background watcher task created (checks every 5s)")
-
+            logger.error(f"Telegram setup error: {e}")
+    logger.info("CryptoQuiz ready!")
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    global whatsapp_watcher_task
-
-    # Stop WhatsApp watcher task
-    if whatsapp_watcher_task:
-        whatsapp_watcher_task.cancel()
-        try:
-            await whatsapp_watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    # NOTE: We do NOT stop the gateway on backend shutdown!
-    # The gateway is managed by supervisor and should continue running
-    # independently of the backend. It will auto-restart on crash and
-    # survive backend restarts.
-    logger.info("Backend shutting down - gateway will continue running via supervisor")
-
-    client.close()
+async def shutdown():
+    for game in active_games.values():
+        if game.get("timer_task"):
+            game["timer_task"].cancel()
+    mongo_client.close()

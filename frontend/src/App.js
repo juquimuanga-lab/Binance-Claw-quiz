@@ -1,37 +1,60 @@
-import React from "react";
+import React, { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
-import LoginPage from "@/pages/LoginPage";
-import SetupPage from "@/pages/SetupPage";
-import AuthCallback from "@/pages/AuthCallback";
-import { Toaster } from "@/components/ui/sonner";
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from "react-router-dom";
+import { Toaster } from "sonner";
+import HomePage from "@/pages/HomePage";
+import HostPage from "@/pages/HostPage";
+import JoinPage from "@/pages/JoinPage";
+import GamePage from "@/pages/GamePage";
+import SoloPage from "@/pages/SoloPage";
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+function TelegramRedirect({ children }) {
+  const [searchParams] = useSearchParams();
+  const joinCode = searchParams.get('join');
 
-function AppRouter() {
-  const location = useLocation();
-  
-  // Check URL fragment (not query params) for session_id - MUST be synchronous
-  // This runs BEFORE ProtectedRoute to prevent race conditions
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
+  useEffect(() => {
+    if (window.Telegram?.WebApp) {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+    }
+  }, []);
+
+  if (joinCode) {
+    return <Navigate to={`/join?code=${joinCode}`} replace />;
   }
-  
-  return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/" element={<SetupPage />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
-  );
+
+  const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  if (startParam) {
+    return <Navigate to={`/join?code=${startParam}`} replace />;
+  }
+
+  return children;
 }
 
 function App() {
   return (
-    <div className="App dark">
-      <Toaster data-testid="global-toaster" richColors position="top-center" />
+    <div className="App">
+      <div className="bg-noise" />
+      <Toaster
+        data-testid="global-toaster"
+        richColors
+        position="top-center"
+        theme="dark"
+        toastOptions={{
+          style: { background: '#1E1E1E', border: '1px solid #27272A', color: '#F2F3F5' }
+        }}
+      />
       <BrowserRouter>
-        <AppRouter />
+        <TelegramRedirect>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/host" element={<HostPage />} />
+            <Route path="/join" element={<JoinPage />} />
+            <Route path="/game/:code" element={<GamePage />} />
+            <Route path="/solo" element={<SoloPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </TelegramRedirect>
       </BrowserRouter>
     </div>
   );
