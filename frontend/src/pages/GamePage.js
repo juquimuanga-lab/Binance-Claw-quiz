@@ -117,6 +117,7 @@ export default function GamePage() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10">
         <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center w-full max-w-md">
+          <img src="/logo.png" alt="Binance Claw Quiz" className="w-20 h-20 mx-auto mb-3 object-contain" />
           <p className="text-gray-500 text-sm mb-2">{session?.article_title}</p>
           <h2 data-testid="lobby-title" className="text-2xl font-bold mb-6" style={{ color: '#F3BA2F' }}>
             {isHost ? 'Game Lobby' : 'Waiting for Host...'}
@@ -347,7 +348,8 @@ export default function GamePage() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10 max-w-lg mx-auto">
         <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="text-center w-full">
-          <Trophy size={48} style={{ color: '#F3BA2F' }} className="mx-auto mb-4 float-anim" />
+          <img src="/logo.png" alt="Binance Claw Quiz" className="w-20 h-20 mx-auto mb-2 object-contain" />
+          <Trophy size={36} style={{ color: '#F3BA2F' }} className="mx-auto mb-3 float-anim" />
           <h2 data-testid="game-over-title" className="text-3xl font-bold mb-1" style={{ color: '#F3BA2F' }}>Game Over!</h2>
 
           {winner && (

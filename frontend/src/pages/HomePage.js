@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Zap, Users, User, GraduationCap } from 'lucide-react';
+import { Zap, Users, User } from 'lucide-react';
 
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
 
@@ -41,19 +41,25 @@ export default function HomePage() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
-        className="text-center mb-10"
+        className="text-center mb-8"
       >
-        <div className="flex items-center justify-center gap-3 mb-3">
-          <GraduationCap size={40} color="#F3BA2F" />
-          <h1
-            data-testid="app-title"
-            className="text-4xl md:text-5xl font-bold tracking-tight"
-            style={{ color: '#F3BA2F' }}
-          >
-            CryptoQuiz
-          </h1>
-        </div>
-        <p className="text-gray-400 text-lg max-w-md mx-auto">
+        <motion.img
+          src="/logo.png"
+          alt="Binance Claw Quiz"
+          data-testid="app-logo"
+          className="w-36 h-36 mx-auto mb-4 object-contain drop-shadow-[0_0_30px_rgba(243,186,47,0.4)]"
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.4, type: 'spring' }}
+        />
+        <h1
+          data-testid="app-title"
+          className="text-3xl md:text-4xl font-bold tracking-tight"
+          style={{ color: '#F3BA2F' }}
+        >
+          Binance Claw Quiz
+        </h1>
+        <p className="text-gray-400 text-base max-w-md mx-auto mt-2">
           Kahoot-style quizzes powered by Binance Academy
         </p>
         {tgUser && (

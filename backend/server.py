@@ -300,7 +300,7 @@ async def calculate_results(code: str, qi: int):
 
 @api_router.get("/health")
 async def health():
-    return {"status": "ok", "service": "CryptoQuiz"}
+    return {"status": "ok", "service": "BinanceClawQuiz"}
 
 @api_router.get("/academy/search")
 async def search_academy(q: str = Query(..., min_length=1)):
@@ -555,7 +555,7 @@ async def telegram_webhook(request: dict):
                 webapp_url = f"{FRONTEND_URL}?join={join_code}" if join_code else FRONTEND_URL
                 await http.post(f"{bot_api}/sendMessage", json={
                     "chat_id": chat_id,
-                    "text": "Welcome to CryptoQuiz! Test your crypto knowledge with friends!",
+                    "text": "Welcome to Binance Claw Quiz! Test your crypto knowledge with friends!",
                     "reply_markup": {"inline_keyboard": [[
                         {"text": "Play Now", "web_app": {"url": webapp_url}}
                     ]]}
@@ -589,7 +589,7 @@ async def setup_telegram():
     async with httpx.AsyncClient() as http:
         r = await http.post(f"{bot_api}/setMyCommands", json={
             "commands": [
-                {"command": "start", "description": "Start CryptoQuiz"},
+                {"command": "start", "description": "Start Binance Claw Quiz"},
                 {"command": "quiz", "description": "Create a quiz"},
                 {"command": "join", "description": "Join a game"}
             ]
@@ -597,7 +597,7 @@ async def setup_telegram():
         results["commands"] = r.json()
         if FRONTEND_URL:
             r = await http.post(f"{bot_api}/setChatMenuButton", json={
-                "menu_button": {"type": "web_app", "text": "CryptoQuiz", "web_app": {"url": FRONTEND_URL}}
+                "menu_button": {"type": "web_app", "text": "Claw Quiz", "web_app": {"url": FRONTEND_URL}}
             })
             results["menu"] = r.json()
             webhook_url = FRONTEND_URL.rstrip('/') + '/api/telegram/webhook'
@@ -622,7 +622,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    logger.info("CryptoQuiz starting...")
+    logger.info("Binance Claw Quiz starting...")
     await db.sessions.create_index("code", unique=True)
     await db.sessions.create_index("slug")
     await db.players.create_index([("session_code", 1), ("player_id", 1)])
@@ -640,7 +640,7 @@ async def startup():
                     ]
                 })
                 await http.post(f"{bot_api}/setChatMenuButton", json={
-                    "menu_button": {"type": "web_app", "text": "CryptoQuiz", "web_app": {"url": FRONTEND_URL}}
+                    "menu_button": {"type": "web_app", "text": "Claw Quiz", "web_app": {"url": FRONTEND_URL}}
                 })
                 webhook_url = FRONTEND_URL.rstrip('/') + '/api/telegram/webhook'
                 await http.post(f"{bot_api}/setWebhook", json={
@@ -649,7 +649,7 @@ async def startup():
             logger.info("Telegram bot configured")
         except Exception as e:
             logger.error(f"Telegram setup error: {e}")
-    logger.info("CryptoQuiz ready!")
+    logger.info("Binance Claw Quiz ready!")
 
 @app.on_event("shutdown")
 async def shutdown():
