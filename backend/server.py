@@ -69,7 +69,7 @@ async def search_binance_academy(query: str) -> list:
     results = []
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as http:
             resp = await http.get(ACADEMY_BASE, headers=headers)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'lxml')
@@ -119,7 +119,7 @@ async def fetch_article_content(url: str) -> dict:
     content = ""
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as http:
             resp = await http.get(url, headers=headers)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, 'lxml')
@@ -137,7 +137,7 @@ async def fetch_article_content(url: str) -> dict:
                     paras = soup.find_all('p')
                     content = "\n".join(p.get_text(strip=True) for p in paras[:50] if p.get_text(strip=True))
     except Exception as e:
-        logger.error(f"Article fetch error: {e}")
+        logger.warning(f"Article scrape failed (fast fallback to LLM): {e}")
 
     if len(content) < 100 and EMERGENT_LLM_KEY:
         topic = url.split('/')[-1].replace('-', ' ').title()
@@ -147,10 +147,10 @@ async def fetch_article_content(url: str) -> dict:
             chat = LlmChat(
                 api_key=EMERGENT_LLM_KEY,
                 session_id=f"content-{uuid.uuid4().hex[:8]}",
-                system_message="You write educational crypto articles in Binance Academy style."
+                system_message="You write concise educational crypto articles. Be direct and factual."
             ).with_model("openai", "gpt-4o")
             resp_text = await chat.send_message(UserMessage(
-                text=f"Write a comprehensive educational article about '{title}' covering key concepts, how it works, and importance in crypto. About 800 words."
+                text=f"Write a 400-word educational summary about '{title}' covering key concepts, how it works, and why it matters in crypto."
             ))
             content = resp_text
         except Exception as e:
@@ -634,7 +634,7 @@ async def startup():
             async with httpx.AsyncClient() as http:
                 await http.post(f"{bot_api}/setMyCommands", json={
                     "commands": [
-                        {"command": "start", "description": "Start CryptoQuiz"},
+                        {"command": "start", "description": "Start Binance Claw Quiz"},
                         {"command": "quiz", "description": "Create a quiz"},
                         {"command": "join", "description": "Join a game"}
                     ]

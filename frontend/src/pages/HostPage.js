@@ -1,11 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, ArrowLeft, Loader2, BookOpen, Sparkles } from 'lucide-react';
+import { Search, ArrowLeft, Loader2, BookOpen, Sparkles, X, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+
+const LOADING_MESSAGES = [
+  'Fetching article content...',
+  'Analyzing the topic...',
+  'Almost there...',
+];
+
+const GEN_MESSAGES = [
+  'Generating quiz questions with AI...',
+  'Crafting challenging options...',
+  'Polishing the quiz...',
+  'Almost ready...',
+];
 
 export default function HostPage() {
   const navigate = useNavigate();
@@ -17,18 +30,63 @@ export default function HostPage() {
   const [fetchingContent, setFetchingContent] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [hostName, setHostName] = useState(tgUser?.first_name || '');
-  const [step, setStep] = useState('search'); // search, article, name
+  const [step, setStep] = useState('search');
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [elapsed, setElapsed] = useState(0);
+
+  const abortRef = useRef(null);
+  const timerRef = useRef(null);
+  const msgRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+      clearInterval(timerRef.current);
+      clearInterval(msgRef.current);
+    };
+  }, []);
+
+  const startProgress = (messages) => {
+    setElapsed(0);
+    let idx = 0;
+    setLoadingMsg(messages[0]);
+    clearInterval(timerRef.current);
+    clearInterval(msgRef.current);
+    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+    msgRef.current = setInterval(() => {
+      idx = Math.min(idx + 1, messages.length - 1);
+      setLoadingMsg(messages[idx]);
+    }, 5000);
+  };
+
+  const stopProgress = () => {
+    clearInterval(timerRef.current);
+    clearInterval(msgRef.current);
+    setElapsed(0);
+    setLoadingMsg('');
+  };
+
+  const cancelOperation = () => {
+    if (abortRef.current) abortRef.current.abort();
+    stopProgress();
+    setFetchingContent(false);
+    setGenerating(false);
+    setSelectedArticle(null);
+    toast.info('Cancelled');
+  };
 
   const searchAcademy = async () => {
     if (!query.trim()) return;
     setSearching(true);
     try {
-      const res = await fetch(`${API}/api/academy/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`${API}/api/academy/search?q=${encodeURIComponent(query)}`, {
+        signal: AbortSignal.timeout(20000),
+      });
       const data = await res.json();
       setResults(data.results || []);
       if (!data.results?.length) toast.info('No results found. Try different keywords.');
-    } catch {
-      toast.error('Search failed');
+    } catch (err) {
+      if (err.name !== 'AbortError') toast.error('Search failed. Try again.');
     } finally {
       setSearching(false);
     }
@@ -36,16 +94,20 @@ export default function HostPage() {
 
   const selectArticle = async (article) => {
     if (!article?.url) {
-      toast.error('Invalid article URL');
+      toast.error('Invalid article');
       return;
     }
     setSelectedArticle(article);
     setFetchingContent(true);
+    startProgress(LOADING_MESSAGES);
+
+    abortRef.current = new AbortController();
     try {
       const res = await fetch(`${API}/api/academy/article`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: String(article.url) }),
+        signal: abortRef.current.signal,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -55,10 +117,13 @@ export default function HostPage() {
       setArticleContent(data);
       setStep('name');
     } catch (err) {
-      toast.error(err.message || 'Failed to fetch article');
-      setSelectedArticle(null);
+      if (err.name !== 'AbortError') {
+        toast.error(err.message || 'Failed to fetch article. Try another topic.');
+        setSelectedArticle(null);
+      }
     } finally {
       setFetchingContent(false);
+      stopProgress();
     }
   };
 
@@ -68,6 +133,9 @@ export default function HostPage() {
       return;
     }
     setGenerating(true);
+    startProgress(GEN_MESSAGES);
+
+    abortRef.current = new AbortController();
     try {
       const quizRes = await fetch(`${API}/api/quiz/generate`, {
         method: 'POST',
@@ -78,6 +146,7 @@ export default function HostPage() {
           article_content: articleContent?.content || '',
           num_questions: 10,
         }),
+        signal: abortRef.current.signal,
       });
       if (!quizRes.ok) {
         const errData = await quizRes.json().catch(() => ({}));
@@ -89,29 +158,42 @@ export default function HostPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host_name: hostName, quiz_id: quiz.quiz_id }),
+        signal: abortRef.current.signal,
       });
       if (!sessionRes.ok) {
         const errData = await sessionRes.json().catch(() => ({}));
         throw new Error(errData.detail || 'Session creation failed');
       }
       const session = await sessionRes.json();
-
       navigate(`/game/${session.code}?role=host`);
     } catch (err) {
-      toast.error(err.message || 'Something went wrong');
+      if (err.name !== 'AbortError') {
+        toast.error(err.message || 'Something went wrong');
+      }
     } finally {
       setGenerating(false);
+      stopProgress();
     }
   };
+
+  const isLoading = fetchingContent || generating;
 
   return (
     <div className="min-h-screen px-5 py-8 relative z-10 max-w-lg mx-auto">
       <button
         data-testid="back-btn"
-        onClick={() => (step === 'name' ? setStep('search') : navigate('/'))}
+        onClick={() => {
+          if (isLoading) {
+            cancelOperation();
+          } else if (step === 'name') {
+            setStep('search');
+          } else {
+            navigate('/');
+          }
+        }}
         className="flex items-center gap-2 text-gray-400 hover:text-white mb-6 transition-colors"
       >
-        <ArrowLeft size={18} /> Back
+        <ArrowLeft size={18} /> {isLoading ? 'Cancel' : 'Back'}
       </button>
 
       <AnimatePresence mode="wait">
@@ -129,14 +211,15 @@ export default function HostPage() {
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && searchAcademy()}
                 placeholder="e.g. Bitcoin, DeFi, NFT..."
-                className="flex-1 h-12 px-4 rounded-xl text-white placeholder:text-gray-600 outline-none transition-all"
+                disabled={isLoading}
+                className="flex-1 h-12 px-4 rounded-xl text-white placeholder:text-gray-600 outline-none transition-all disabled:opacity-50"
                 style={{ background: '#0A0A0A', border: '1px solid #27272A' }}
               />
               <button
                 data-testid="search-btn"
                 onClick={searchAcademy}
-                disabled={searching}
-                className="h-12 px-5 rounded-xl font-semibold flex items-center gap-2 active:scale-95 transition-all"
+                disabled={searching || isLoading}
+                className="h-12 px-5 rounded-xl font-semibold flex items-center gap-2 active:scale-95 transition-all disabled:opacity-50"
                 style={{ background: '#F3BA2F', color: '#000' }}
               >
                 {searching ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
@@ -144,29 +227,44 @@ export default function HostPage() {
             </div>
 
             {fetchingContent && (
-              <div className="flex items-center justify-center py-20 gap-3">
-                <Loader2 size={24} className="animate-spin" style={{ color: '#F3BA2F' }} />
-                <span className="text-gray-400">Fetching article...</span>
-              </div>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col items-center py-16 gap-4"
+              >
+                <Loader2 size={32} className="animate-spin" style={{ color: '#F3BA2F' }} />
+                <p className="text-gray-300 text-sm">{loadingMsg}</p>
+                <p className="text-gray-600 text-xs">{elapsed}s</p>
+                <button
+                  data-testid="cancel-fetch-btn"
+                  onClick={cancelOperation}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white transition-colors mt-2"
+                  style={{ background: '#1E1E1E', border: '1px solid #27272A' }}
+                >
+                  <X size={14} /> Cancel
+                </button>
+              </motion.div>
             )}
 
-            <div className="space-y-2">
-              {results.map((r, i) => (
-                <motion.button
-                  key={`${r.url}-${i}`}
-                  data-testid={`article-result-${i}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  onClick={() => selectArticle(r)}
-                  className="w-full text-left p-4 rounded-xl border flex items-center gap-3 transition-all hover:border-[#F3BA2F]/50 active:scale-[0.98]"
-                  style={{ background: '#121212', borderColor: '#27272A' }}
-                >
-                  <BookOpen size={18} className="text-gray-500 shrink-0" />
-                  <span className="text-sm text-gray-200 line-clamp-2">{r.title}</span>
-                </motion.button>
-              ))}
-            </div>
+            {!fetchingContent && (
+              <div className="space-y-2">
+                {results.map((r, i) => (
+                  <motion.button
+                    key={`${r.url}-${i}`}
+                    data-testid={`article-result-${i}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                    onClick={() => selectArticle(r)}
+                    className="w-full text-left p-4 rounded-xl border flex items-center gap-3 transition-all hover:border-[#F3BA2F]/50 active:scale-[0.98]"
+                    style={{ background: '#121212', borderColor: '#27272A' }}
+                  >
+                    <BookOpen size={18} className="text-gray-500 shrink-0" />
+                    <span className="text-sm text-gray-200 line-clamp-2">{r.title}</span>
+                  </motion.button>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
 
@@ -188,29 +286,44 @@ export default function HostPage() {
               value={hostName}
               onChange={(e) => setHostName(e.target.value)}
               placeholder="Enter your name"
-              className="w-full h-12 px-4 rounded-xl text-white placeholder:text-gray-600 outline-none mb-6"
+              disabled={generating}
+              className="w-full h-12 px-4 rounded-xl text-white placeholder:text-gray-600 outline-none mb-6 disabled:opacity-50"
               style={{ background: '#0A0A0A', border: '1px solid #27272A' }}
             />
 
-            <button
-              data-testid="generate-quiz-btn"
-              onClick={generateAndCreate}
-              disabled={generating}
-              className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-50"
-              style={{ background: '#F3BA2F', color: '#000' }}
-            >
-              {generating ? (
-                <>
+            {generating ? (
+              <div className="w-full flex flex-col items-center gap-3 py-4">
+                <button
+                  data-testid="generate-quiz-btn"
+                  disabled
+                  className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 opacity-80"
+                  style={{ background: '#F3BA2F', color: '#000' }}
+                >
                   <Loader2 size={20} className="animate-spin" />
-                  Generating Quiz...
-                </>
-              ) : (
-                <>
-                  <Sparkles size={20} />
-                  Generate Quiz & Start
-                </>
-              )}
-            </button>
+                  {loadingMsg || 'Generating...'}
+                </button>
+                <div className="flex items-center gap-3">
+                  <p className="text-gray-600 text-xs">{elapsed}s</p>
+                  <button
+                    data-testid="cancel-generate-btn"
+                    onClick={cancelOperation}
+                    className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    <X size={12} /> Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                data-testid="generate-quiz-btn"
+                onClick={generateAndCreate}
+                className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all"
+                style={{ background: '#F3BA2F', color: '#000' }}
+              >
+                <Sparkles size={20} />
+                Generate Quiz & Start
+              </button>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

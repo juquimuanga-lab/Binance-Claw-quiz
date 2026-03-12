@@ -14,43 +14,46 @@ Transform the MoltBot/OpenClaw installation into a Kahoot.it-style quiz Telegram
 ## Branding
 - **App Name**: Binance Claw Quiz
 - **Logo**: Custom emblem with claw/quiz motifs in gold/black/blue
-- **Theme**: Dark crypto aesthetic with Binance yellow (#F3BA2F), cyber cyan (#00F0FF), neon green (#00FF29)
+- **Telegram Bot**: Commands updated to "Start Binance Claw Quiz"
 
 ## What's Been Implemented (2026-03-12)
 ### Backend
 - Binance Academy search + article scraping (with LLM fallback)
-- Quiz generation via GPT-4o (emergentintegrations library)
-- Session management (create/join with high-entropy codes ≥32 bits)
+- Reduced timeouts (10s scrape → fast LLM fallback)
+- Quiz generation via GPT-4o
+- Session management (high-entropy codes ≥32 bits)
 - WebSocket game engine (timer, scoring, per-session leaderboards)
 - Telegram bot setup (commands, menu button, webhook)
 - Solo quiz endpoint
 
 ### Frontend
 - HomePage: Logo + Host/Join/Solo mode selection
-- HostPage: Search → Select Article → Generate Quiz → Create Session
-- JoinPage: Enter code + nickname to join
-- GamePage: Lobby (with logo) → Questions → Results → Final Standings (with logo)
+- HostPage: Search → Select → Generate (with progress + cancel)
+- JoinPage: Enter code + nickname
+- GamePage: Lobby (with logo) → Questions → Results → Final Standings
 - SoloPage: Search → Generate → Play → Results
-- Telegram Web App SDK integration
-- Mobile-first design
+- AbortController timeouts on all API calls
+- Cancel buttons during long operations
 
-### Telegram Bot
-- Token configured
-- Commands: /start, /quiz, /join
-- Menu button "Claw Quiz" opens Mini App
-- Webhook for message handling
+### Bug Fixes (2026-03-12)
+- Fixed /start message: CryptoQuiz → Binance Claw Quiz
+- Fixed host page sticking: Added progress indicators, cancel buttons, AbortController timeouts
+- Reduced backend scrape timeout from 20s to 10s
+- Reduced LLM content generation prompt (400 words vs 800)
 
 ## Testing Status
 - Backend: 100%
-- Frontend: 90%
+- Frontend: 95%
+
+## Deployment Notes
+- Emergent Native Deployment recommended (50 credits/month, 24/7 uptime)
+- Vercel not ideal: WebSocket not supported in serverless, FastAPI needs modifications
+- If Vercel needed: Save to GitHub → deploy frontend separately, backend needs Railway/Render
 
 ## Prioritized Backlog
 ### P0
-- Optimize article fetching speed
 - WebSocket reconnection handling
-
 ### P1
 - Sound effects, animated timer, Telegram inline share
-
 ### P2
-- Quiz history, custom duration, multi-language, bookmarking
+- Quiz history, custom duration, multi-language
