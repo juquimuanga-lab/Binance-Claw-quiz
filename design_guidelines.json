@@ -1,0 +1,79 @@
+{
+  "theme": {
+    "mode": "dark",
+    "strategy": "enforced-dark",
+    "colors": {
+      "background": "#050505",
+      "surface": "#121212",
+      "surface_highlight": "#1E1E1E",
+      "foreground": "#F2F3F5",
+      "primary": "#F3BA2F",
+      "secondary": "#00F0FF",
+      "border": "#27272A",
+      "quiz": {
+        "red": "#FF2E63",
+        "blue": "#00F0FF",
+        "yellow": "#F3BA2F",
+        "green": "#00FF29"
+      }
+    }
+  },
+  "typography": {
+    "font_family_heading": "Space Grotesk, sans-serif",
+    "font_family_body": "Inter, sans-serif",
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-bold tracking-tight",
+      "h2": "text-3xl md:text-4xl font-semibold tracking-tight",
+      "h3": "text-2xl font-semibold",
+      "body": "text-base md:text-lg leading-relaxed"
+    }
+  },
+  "layout": {
+    "container": "max-w-md mx-auto md:max-w-2xl lg:max-w-4xl px-4 min-h-screen",
+    "spacing": "space-y-6 md:space-y-8",
+    "grid": "grid grid-cols-1 md:grid-cols-2 gap-4"
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#F3BA2F] text-black hover:bg-[#D4A017] font-bold rounded-xl shadow-[0_0_15px_rgba(243,186,47,0.4)] transition-all active:scale-95",
+      "secondary": "bg-transparent border-2 border-[#27272A] hover:border-[#F3BA2F] text-white rounded-xl transition-all",
+      "quiz_option": "h-24 md:h-32 text-xl font-bold rounded-xl shadow-lg border-b-4 border-black/20 active:border-b-0 active:translate-y-1 transition-all flex items-center justify-center p-4 text-center break-words"
+    },
+    "cards": {
+      "base": "bg-[#121212] border border-[#27272A] rounded-2xl p-6 shadow-xl",
+      "highlight": "bg-[#121212] border border-[#F3BA2F]/50 shadow-[0_0_20px_rgba(243,186,47,0.1)] rounded-2xl p-6"
+    },
+    "inputs": {
+      "default": "bg-[#0A0A0A] border border-[#27272A] focus:border-[#F3BA2F] focus:ring-1 focus:ring-[#F3BA2F] rounded-lg h-12 px-4 text-white placeholder:text-gray-600 transition-all"
+    }
+  },
+  "visual_enhancers": {
+    "texture": "bg-[url('https://images.unsplash.com/photo-1762279388956-1c098163a2a8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzR8MHwxfHNlYXJjaHw0fHxuZW9uJTIwZnV0dXJpc3RpYyUyMGJsb2NrY2hhaW4lMjBuZXR3b3JrJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzczMjc0NTc3fDA&ixlib=rb-4.1.0&q=85')] bg-cover bg-center bg-no-repeat bg-fixed opacity-20 mix-blend-overlay fixed inset-0 pointer-events-none z-0",
+    "glass": "backdrop-blur-xl bg-black/60 border border-white/10",
+    "glow": "shadow-[0_0_20px_rgba(243,186,47,0.3)]"
+  },
+  "image_urls": {
+    "background_main": "https://images.unsplash.com/photo-1762279388956-1c098163a2a8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzR8MHwxfHNlYXJjaHw0fHxuZW9uJTIwZnV0dXJpc3RpYyUyMGJsb2NrY2hhaW4lMjBuZXR3b3JrJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzczMjc0NTc3fDA&ixlib=rb-4.1.0&q=85",
+    "trophy": "https://images.unsplash.com/photo-1635840419797-b7c784b1b19b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHw0fHwzZCUyMGNyeXB0byUyMGNvaW4lMjBiaXRjb2luJTIwZXRoZXJldW0lMjBmbG9hdGluZ3xlbnwwfHx8fDE3NzMyNzQ1Nzl8MA&ixlib=rb-4.1.0&q=85",
+    "confetti": "https://images.unsplash.com/photo-1763385601982-2e0167857318?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTV8MHwxfHNlYXJjaHwzfHxjb2xvcmZ1bCUyMGNvbmZldHRpJTIwZXhwbG9zaW9uJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzczMjc0NTg2fDA&ixlib=rb-4.1.0&q=85",
+    "academy_icon": "https://cryptologos.cc/logos/binance-coin-bnb-logo.png"
+  },
+  "instructions_to_main_agent": [
+    "INSTALL @twa-dev/sdk immediately. This is a Telegram Mini App.",
+    "Force DARK MODE in tailwind config. Do not allow light mode toggle.",
+    "Use 'Space Grotesk' for all Headings (h1-h3) and 'Inter' for body text.",
+    "Use the specific 'quiz_option' button style for the Game Screen. Do NOT use standard Shadcn buttons for answers.",
+    "Implement a 'Lobby' screen with a massive, pulsing Join Code.",
+    "Use Framer Motion for the countdown timer (circular progress) and answer reveal animations.",
+    "For the 'Binance Academy' search results, use a 'Glitch' or 'Terminal' text effect to make it feel techy.",
+    "Ensure all touch targets are at least 44px high (Mobile First).",
+    "Use 'sonner' for all in-game notifications (e.g., 'Correct!', 'Wrong Answer').",
+    "Add 'data-testid' to every interactive element."
+  ],
+  "universal_guidelines": [
+    "Avoid gradients on text, it reduces readability on mobile.",
+    "Use 24px-32px padding on all containers.",
+    "Do not use generic 'Card' components for everything. Use 'Border-only' containers for a cleaner look.",
+    "Animations must be snappy (0.2s - 0.3s). No slow fades."
+  ]
+}
