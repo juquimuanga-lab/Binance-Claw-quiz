@@ -63,7 +63,10 @@ export default function SoloPage() {
           num_questions: 10,
         }),
       });
-      if (!quizRes.ok) throw new Error('Failed to generate');
+      if (!quizRes.ok) {
+        const errData = await quizRes.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to generate quiz. Please try again.');
+      }
       const quiz = await quizRes.json();
       setQuestions(quiz.questions || []);
       setStep('playing');

@@ -70,7 +70,10 @@ export default function HostPage() {
           num_questions: 10,
         }),
       });
-      if (!quizRes.ok) throw new Error('Quiz generation failed');
+      if (!quizRes.ok) {
+        const errData = await quizRes.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Quiz generation failed. Please try again.');
+      }
       const quiz = await quizRes.json();
 
       const sessionRes = await fetch(`${API}/api/session/create`, {
@@ -78,7 +81,10 @@ export default function HostPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host_name: hostName, quiz_id: quiz.quiz_id }),
       });
-      if (!sessionRes.ok) throw new Error('Session creation failed');
+      if (!sessionRes.ok) {
+        const errData = await sessionRes.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Session creation failed');
+      }
       const session = await sessionRes.json();
 
       navigate(`/game/${session.code}?role=host`);

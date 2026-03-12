@@ -107,9 +107,12 @@ class CryptoQuizTester:
 
     def test_quiz_generation(self):
         """Test quiz generation from article"""
-        if not self.article_data or not self.article_data.get('content'):
-            self.log("❌ Skipping quiz generation - no article content")
-            return False
+        # Use short test content to save LLM budget as per requirements
+        test_article_data = {
+            "url": "https://test.example/article",
+            "title": "Bitcoin Fundamentals",
+            "content": "Bitcoin is a decentralized digital currency that operates on blockchain technology. Transactions are verified by network nodes through cryptographic algorithms and recorded in a public distributed ledger. Bitcoin enables peer-to-peer transactions without intermediaries like banks. The currency was created in 2009 and uses proof-of-work consensus mechanism."
+        }
 
         success, response = self.run_test(
             "Quiz Generation",
@@ -117,10 +120,10 @@ class CryptoQuizTester:
             "quiz/generate",
             200,
             data={
-                "article_url": self.article_data.get('url', ''),
-                "article_title": self.article_data.get('title', ''),
-                "article_content": self.article_data.get('content', ''),
-                "num_questions": 5
+                "article_url": test_article_data["url"],
+                "article_title": test_article_data["title"],
+                "article_content": test_article_data["content"],
+                "num_questions": 3
             },
             timeout=30
         )
@@ -209,9 +212,12 @@ class CryptoQuizTester:
 
     def test_solo_quiz(self):
         """Test solo quiz generation"""
-        if not self.article_data or not self.article_data.get('content'):
-            self.log("❌ Skipping solo quiz - no article content")
-            return False
+        # Use short test content to save LLM budget as per requirements
+        test_article_data = {
+            "url": "https://test.example/ethereum",  
+            "title": "Ethereum Smart Contracts",
+            "content": "Ethereum is a blockchain platform that supports smart contracts. Smart contracts are self-executing programs that automatically enforce agreements. They run on the Ethereum Virtual Machine (EVM) and use Ether (ETH) for transaction fees. Ethereum enables decentralized applications (DApps) and decentralized finance (DeFi) protocols."
+        }
 
         success, response = self.run_test(
             "Solo Quiz Generation",
@@ -219,10 +225,10 @@ class CryptoQuizTester:
             "quiz/solo",
             200,
             data={
-                "article_url": self.article_data.get('url', ''),
-                "article_title": self.article_data.get('title', ''),
-                "article_content": self.article_data.get('content', ''),
-                "num_questions": 5
+                "article_url": test_article_data["url"],
+                "article_title": test_article_data["title"], 
+                "article_content": test_article_data["content"],
+                "num_questions": 3
             },
             timeout=30
         )
