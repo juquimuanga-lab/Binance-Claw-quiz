@@ -35,19 +35,28 @@ export default function HostPage() {
   };
 
   const selectArticle = async (article) => {
+    if (!article?.url) {
+      toast.error('Invalid article URL');
+      return;
+    }
     setSelectedArticle(article);
     setFetchingContent(true);
     try {
       const res = await fetch(`${API}/api/academy/article`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: article.url }),
+        body: JSON.stringify({ url: String(article.url) }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to fetch article');
+      }
       const data = await res.json();
       setArticleContent(data);
       setStep('name');
-    } catch {
-      toast.error('Failed to fetch article');
+    } catch (err) {
+      toast.error(err.message || 'Failed to fetch article');
+      setSelectedArticle(null);
     } finally {
       setFetchingContent(false);
     }
