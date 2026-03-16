@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,16 +6,16 @@ import os
 import logging
 import json
 import secrets
-import asyncio
 import httpx
 import re
-import uuid
 from pathlib import Path
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import Dict
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+
+# ================= INIT =================
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -24,10 +24,7 @@ mongo_url = os.environ['MONGO_URL']
 mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', '')
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
 genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
@@ -36,10 +33,22 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ================= SAFE ARTICLE STORE =================
+
+ARTICLES = [
+    {"title": "What Is Bitcoin?", "url": "https://academy.binance.com/en/articles/what-is-bitcoin"},
+    {"title": "What Is Ethereum?", "url": "https://academy.binance.com/en/articles/what-is-ethereum"},
+    {"title": "What Is Blockchain?", "url": "https://academy.binance.com/en/articles/what-is-blockchain"},
+    {"title": "What Is DeFi?", "url": "https://academy.binance.com/en/articles/what-is-defi"},
+    {"title": "What Are NFTs?", "url": "https://academy.binance.com/en/articles/what-are-nfts"},
+]
+
+ARTICLE_CACHE: Dict[str, dict] = {}
+
+# ================= MODELS =================
 
 class ArticleFetchRequest(BaseModel):
     url: str
-
 
 class GenerateQuizRequest(BaseModel):
     article_url: str
@@ -47,42 +56,28 @@ class GenerateQuizRequest(BaseModel):
     article_content: str
     num_questions: int = 10
 
-
-class CreateSessionRequest(BaseModel):
-    host_name: str
-    quiz_id: str
-
-
-class JoinSessionRequest(BaseModel):
-    code: str
-    nickname: str
-
-
-ACADEMY_BASE = "https://www.binance.com/en/academy"
-ARTICLE_CACHE: Dict[str, dict] = {}
-
+# ================= SEARCH =================
 
 async def search_binance_academy(query: str) -> list:
     query_lower = query.lower()
 
-    # 1️⃣ Try local search first (fast + safe)
+    # Local search first
     local_results = [
         article for article in ARTICLES
         if query_lower in article["title"].lower()
     ]
 
     if local_results:
-        return local_results[:15]
+        return local_results[:10]
 
-    # 2️⃣ Gemini fallback (safe parsing)
+    # Gemini fallback (SAFE)
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
-Suggest 5 Binance Academy article URLs about "{query}".
+Suggest Binance Academy article titles for: {query}
 
-Return ONLY valid JSON:
-
+Return JSON:
 [
   {{"title":"...","url":"https://academy.binance.com/en/articles/..."}}
 ]
@@ -91,93 +86,107 @@ Return ONLY valid JSON:
         response = model.generate_content(prompt)
         text = response.text.strip()
 
-        # 🔥 clean markdown
-        if text.startswith("```"):
-            text = re.sub(r'^```[a-zA-Z]*', '', text)
-            text = text.replace("```", "").strip()
-
-        # 🔥 safe JSON extraction
         match = re.search(r'\[[\s\S]*\]', text)
 
         if not match:
-            logger.error(f"No JSON found in Gemini response: {text}")
-            return ARTICLES[:5] if ARTICLES else []
+            return ARTICLES
 
-        json_text = match.group()
+        data = json.loads(match.group())
 
-        results = json.loads(json_text)
+        results = []
+        for item in data:
+            if "title" in item and "url" in item:
+                results.append(item)
 
-        # 🔥 validate results
-        cleaned = []
-        for r in results:
-            if isinstance(r, dict) and "title" in r and "url" in r:
-                cleaned.append({
-                    "title": str(r["title"]),
-                    "url": str(r["url"])
-                })
+        if results:
+            ARTICLES.extend(results)
 
-        # 🔥 cache results (important)
-        if cleaned:
-            ARTICLES.extend(cleaned)
-
-        return cleaned if cleaned else ARTICLES[:5]
+        return results if results else ARTICLES
 
     except Exception as e:
-        logger.error(f"Gemini search error: {e}")
-        return ARTICLES[:5] if ARTICLES else []
+        logger.error(f"Search error: {e}")
+        return ARTICLES
 
+# ================= FETCH ARTICLE =================
 
-async def generate_quiz_questions(article_title: str, article_content: str, num_questions: int = 10) -> list:
+async def fetch_article_content(url: str) -> dict:
+    if url in ARTICLE_CACHE:
+        return ARTICLE_CACHE[url]
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(url)
 
-    prompt = f"""
-Generate {num_questions} quiz questions from this Binance Academy article.
+        soup = BeautifulSoup(resp.text, 'lxml')
 
-Title: {article_title}
+        h1 = soup.find("h1")
+        title = h1.get_text(strip=True) if h1 else "Crypto Article"
 
-Content:
-{article_content[:4500]}
+        paras = soup.find_all("p")
+        content = "\n".join(p.get_text(strip=True) for p in paras[:50])
 
-Return ONLY JSON:
+        result = {
+            "title": title,
+            "content": content,
+            "url": url
+        }
 
+        ARTICLE_CACHE[url] = result
+        return result
+
+    except Exception as e:
+        logger.error(f"Fetch error: {e}")
+        return {
+            "title": "Error",
+            "content": "",
+            "url": url
+        }
+
+# ================= QUIZ =================
+
+async def generate_quiz_questions(title: str, content: str, num: int):
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        prompt = f"""
+Create {num} quiz questions from this:
+
+Title: {title}
+Content: {content[:3000]}
+
+Return JSON:
 [
- {{
-  "question":"...",
-  "options":["A","B","C","D"],
-  "correct":0,
-  "explanation":"..."
- }}
+ {{"question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}}
 ]
 """
 
-    response = model.generate_content(prompt)
-    text = response.text
+        response = model.generate_content(prompt)
+        text = response.text
 
-    match = re.search(r'\[.*\]', text, re.DOTALL)
-    questions = json.loads(match.group())
+        match = re.search(r'\[[\s\S]*\]', text)
 
-    return questions[:num_questions]
+        if not match:
+            raise ValueError("No JSON")
 
+        return json.loads(match.group())
 
-active_games: Dict[str, dict] = {}
+    except Exception as e:
+        logger.error(f"Quiz error: {e}")
+        raise HTTPException(status_code=500, detail="Quiz generation failed")
 
+# ================= ROUTES =================
 
 @api_router.get("/health")
 async def health():
     return {"status": "ok"}
 
-
 @api_router.get("/academy/search")
-async def search_academy(q: str = Query(..., min_length=1)):
-    results = await search_binance_academy(q)
-    return {"results": results}
-
+async def search_academy(q: str = Query(...)):
+    return {"results": await search_binance_academy(q)}
 
 @api_router.post("/academy/article")
 async def get_article(req: ArticleFetchRequest):
     return await fetch_article_content(req.url)
-
 
 @api_router.post("/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
@@ -188,12 +197,9 @@ async def generate_quiz(req: GenerateQuizRequest):
         req.num_questions
     )
 
-    quiz_id = f"quiz_{secrets.token_hex(8)}"
-
     doc = {
-        "quiz_id": quiz_id,
+        "quiz_id": f"quiz_{secrets.token_hex(8)}",
         "article_title": req.article_title,
-        "article_url": req.article_url,
         "questions": questions,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -203,6 +209,7 @@ async def generate_quiz(req: GenerateQuizRequest):
 
     return doc
 
+# ================= APP =================
 
 app.include_router(api_router)
 
