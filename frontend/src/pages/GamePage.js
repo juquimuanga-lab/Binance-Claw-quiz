@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
+import { fireCelebration } from '@/utils/celebration';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -86,6 +87,7 @@ export default function GamePage() {
         case 'game_over':
           setStandings(msg.final_standings);
           setState('game_over');
+          setTimeout(() => fireCelebration(), 400);
           break;
         default:
           break;

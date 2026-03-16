@@ -59,14 +59,27 @@ class CryptoQuizTester:
             return False, {}
 
     def test_health(self):
-        """Test health endpoint"""
+        """Test health endpoint and check for BinanceClawQuiz"""
         success, response = self.run_test(
             "Health Check",
             "GET",
             "health",
             200
         )
-        return success
+        if success and isinstance(response, dict):
+            if ('app' in response and response['app'] == 'BinanceClawQuiz') or \
+               ('service' in response and response['service'] == 'BinanceClawQuiz'):
+                self.log("✅ Health endpoint returns correct app name: BinanceClawQuiz")
+                return True
+            else:
+                self.log(f"❌ Health endpoint doesn't return BinanceClawQuiz, got: {response}")
+                return False
+        elif success and 'BinanceClawQuiz' in str(response):
+            self.log("✅ Health endpoint contains BinanceClawQuiz")
+            return True
+        else:
+            self.log(f"❌ Health endpoint test failed or doesn't contain BinanceClawQuiz")
+            return False
 
     def test_academy_search(self):
         """Test Binance Academy search"""

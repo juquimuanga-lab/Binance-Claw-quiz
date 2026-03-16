@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Zap, Users, User } from 'lucide-react';
+import { Zap, Users, User, HelpCircle } from 'lucide-react';
+import GuideModal from '@/components/GuideModal';
 
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const [showGuide, setShowGuide] = useState(false);
 
   const cards = [
     {
@@ -60,7 +62,7 @@ export default function HomePage() {
           Binance Claw Quiz
         </h1>
         <p className="text-gray-400 text-base max-w-md mx-auto mt-2">
-          Kahoot-style quizzes powered by Binance Academy
+          Fun crypto quizzes powered by Binance Academy
         </p>
         {tgUser && (
           <p className="text-gray-500 text-sm mt-2">
@@ -109,6 +111,22 @@ export default function HomePage() {
       >
         Content sourced from Binance Academy
       </motion.p>
+
+      <motion.button
+        data-testid="how-to-play-btn"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.6 }}
+        onClick={() => setShowGuide(true)}
+        className="mt-4 flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium transition-all active:scale-95"
+        style={{ background: '#1E1E1E', border: '1px solid #27272A', color: '#9CA3AF' }}
+        whileHover={{ borderColor: '#F3BA2F', color: '#F3BA2F' }}
+      >
+        <HelpCircle size={15} />
+        How to Play
+      </motion.button>
+
+      <GuideModal isOpen={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );
 }
