@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
