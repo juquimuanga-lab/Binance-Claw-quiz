@@ -65,76 +65,66 @@ ARTICLE_CACHE: Dict[str, dict] = {}
 async def search_binance_academy(query: str) -> list:
     query_lower = query.lower()
 
-    # 1. Try local index first
-    results = [
+    # 1️⃣ Try local search first (fast + safe)
+    local_results = [
         article for article in ARTICLES
         if query_lower in article["title"].lower()
     ]
 
-    if results:
-        return results[:15]
+    if local_results:
+        return local_results[:15]
 
-    # 2. Fallback to Gemini (live search)
+    # 2️⃣ Gemini fallback (safe parsing)
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
 Suggest 5 Binance Academy article URLs about "{query}".
 
-Return JSON only:
+Return ONLY valid JSON:
+
 [
   {{"title":"...","url":"https://academy.binance.com/en/articles/..."}}
 ]
 """
 
         response = model.generate_content(prompt)
-        text = response.text
+        text = response.text.strip()
 
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        results = json.loads(match.group())
+        # 🔥 clean markdown
+        if text.startswith("```"):
+            text = re.sub(r'^```[a-zA-Z]*', '', text)
+            text = text.replace("```", "").strip()
 
-        # 🔥 Save to cache (important)
-        ARTICLES.extend(results)
+        # 🔥 safe JSON extraction
+        match = re.search(r'\[[\s\S]*\]', text)
 
-        return results
+        if not match:
+            logger.error(f"No JSON found in Gemini response: {text}")
+            return ARTICLES[:5] if ARTICLES else []
 
-    except Exception as e:
-        logger.error(e)
-        return ARTICLES[:5]  # fallback fallback
+        json_text = match.group()
 
+        results = json.loads(json_text)
 
-async def fetch_article_content(url: str) -> dict:
-    if url in ARTICLE_CACHE:
-        return ARTICLE_CACHE[url]
+        # 🔥 validate results
+        cleaned = []
+        for r in results:
+            if isinstance(r, dict) and "title" in r and "url" in r:
+                cleaned.append({
+                    "title": str(r["title"]),
+                    "url": str(r["url"])
+                })
 
-    try:
-        async with httpx.AsyncClient() as http:
-            resp = await http.get(url)
+        # 🔥 cache results (important)
+        if cleaned:
+            ARTICLES.extend(cleaned)
 
-        soup = BeautifulSoup(resp.text, 'lxml')
-
-        h1 = soup.find('h1')
-        title = h1.get_text(strip=True) if h1 else "Binance Academy Article"
-
-        paras = soup.find_all("p")
-        content = "\n".join(p.get_text(strip=True) for p in paras if p.get_text(strip=True))
-
-        result = {
-            "title": title,
-            "content": content[:6000],
-            "url": url
-        }
-
-        ARTICLE_CACHE[url] = result
-        return result
+        return cleaned if cleaned else ARTICLES[:5]
 
     except Exception as e:
-        logger.error(f"Article fetch error: {e}")
-        return {
-            "title": "Error",
-            "content": "",
-            "url": url
-        }
+        logger.error(f"Gemini search error: {e}")
+        return ARTICLES[:5] if ARTICLES else []
 
 
 async def generate_quiz_questions(article_title: str, article_content: str, num_questions: int = 10) -> list:
