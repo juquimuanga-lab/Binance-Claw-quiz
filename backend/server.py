@@ -63,31 +63,34 @@ ARTICLE_CACHE: Dict[str, dict] = {}
 
 
 async def search_binance_academy(query: str) -> list:
-    url = "https://academy.binance.com/bapi/composite/v1/public/academy/search/articles"
+    url = "https://academy.binance.com/bapi/academy/v1/public/articles"
 
     params = {
-        "keyword": query,
         "pageNo": 1,
-        "pageSize": 10
+        "pageSize": 50,
+        "lang": "en"
     }
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(url, params=params)
+            resp = await client.get(url, params=params)
 
-        data = r.json()
+        data = resp.json()
+        articles = data.get("data", {}).get("list", [])
 
-        articles = data.get("data", {}).get("articles", [])
+        query_lower = query.lower()
 
         results = []
 
         for a in articles:
-            results.append({
-                "title": a.get("title"),
-                "url": f"https://academy.binance.com/en/articles/{a.get('code')}"
-            })
+            title = a.get("title", "")
+            if query_lower in title.lower():
+                results.append({
+                    "title": title,
+                    "url": f"https://academy.binance.com/en/articles/{a.get('code')}"
+                })
 
-        return results
+        return results[:15]
 
     except Exception as e:
         logger.error(f"Academy API error: {e}")
