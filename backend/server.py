@@ -63,37 +63,41 @@ ARTICLE_CACHE: Dict[str, dict] = {}
 
 
 async def search_binance_academy(query: str) -> list:
-    url = "https://academy.binance.com/bapi/academy/v1/public/articles"
-
-    params = {
-        "pageNo": 1,
-        "pageSize": 50,
-        "lang": "en"
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, params=params)
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
-        data = resp.json()
-        articles = data.get("data", {}).get("list", [])
+        prompt = f"""
+Return 5 Binance Academy articles related to the topic "{query}".
 
-        query_lower = query.lower()
+Return ONLY JSON in this format:
 
-        results = []
+[
+  {{
+    "title":"What Is Bitcoin?",
+    "url":"https://academy.binance.com/en/articles/what-is-bitcoin"
+  }}
+]
 
-        for a in articles:
-            title = a.get("title", "")
-            if query_lower in title.lower():
-                results.append({
-                    "title": title,
-                    "url": f"https://academy.binance.com/en/articles/{a.get('code')}"
-                })
+Rules:
+- URLs must be valid Binance Academy article URLs
+- Return only JSON
+"""
 
-        return results[:15]
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+
+        if text.startswith("```"):
+            text = re.sub(r'^```\\w*\\n?', '', text)
+            text = re.sub(r'\\n?```$', '', text)
+
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+
+        results = json.loads(match.group()) if match else json.loads(text)
+
+        return results[:10]
 
     except Exception as e:
-        logger.error(f"Academy API error: {e}")
+        logger.error(f"Gemini search error: {e}")
         return []
 
 
