@@ -67,34 +67,47 @@ async def search_binance_academy(query: str) -> list:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
-Return 5 Binance Academy articles related to the topic "{query}".
+Suggest 5 Binance Academy articles related to the topic "{query}".
 
-Return ONLY JSON in this format:
+Return ONLY valid JSON in this format:
 
 [
   {{
-    "title":"What Is Bitcoin?",
-    "url":"https://academy.binance.com/en/articles/what-is-bitcoin"
+    "title": "What Is Bitcoin?",
+    "url": "https://academy.binance.com/en/articles/what-is-bitcoin"
   }}
 ]
-
-Rules:
-- URLs must be valid Binance Academy article URLs
-- Return only JSON
 """
 
         response = model.generate_content(prompt)
+
         text = response.text.strip()
 
+        # remove markdown if present
         if text.startswith("```"):
-            text = re.sub(r'^```\\w*\\n?', '', text)
-            text = re.sub(r'\\n?```$', '', text)
+            text = re.sub(r'^```[a-zA-Z]*', '', text)
+            text = text.replace("```", "").strip()
 
-        match = re.search(r'\[.*\]', text, re.DOTALL)
+        # try to find JSON array
+        match = re.search(r'\[[\s\S]*\]', text)
 
-        results = json.loads(match.group()) if match else json.loads(text)
+        if match:
+            json_text = match.group()
+        else:
+            json_text = text
 
-        return results[:10]
+        results = json.loads(json_text)
+
+        # validate structure
+        cleaned = []
+        for r in results:
+            if isinstance(r, dict) and "title" in r and "url" in r:
+                cleaned.append({
+                    "title": str(r["title"]),
+                    "url": str(r["url"])
+                })
+
+        return cleaned[:10]
 
     except Exception as e:
         logger.error(f"Gemini search error: {e}")
@@ -110,7 +123,8 @@ async def fetch_article_content(url: str) -> dict:
 
     soup = BeautifulSoup(resp.text, 'lxml')
 
-    title = soup.find('h1').get_text(strip=True)
+    h1 = soup.find('h1')
+title = h1.get_text(strip=True) if h1 else "Binance Academy Article"
 
     paras = soup.find_all("p")
     content = "\n".join(p.get_text(strip=True) for p in paras)
