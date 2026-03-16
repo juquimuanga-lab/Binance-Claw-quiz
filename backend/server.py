@@ -118,21 +118,34 @@ async def fetch_article_content(url: str) -> dict:
     if url in ARTICLE_CACHE:
         return ARTICLE_CACHE[url]
 
-    async with httpx.AsyncClient() as http:
-        resp = await http.get(url)
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(url)
 
-    soup = BeautifulSoup(resp.text, 'lxml')
+        soup = BeautifulSoup(resp.text, 'lxml')
 
-    h1 = soup.find('h1')
-title = h1.get_text(strip=True) if h1 else "Binance Academy Article"
+        h1 = soup.find('h1')
+        title = h1.get_text(strip=True) if h1 else "Binance Academy Article"
 
-    paras = soup.find_all("p")
-    content = "\n".join(p.get_text(strip=True) for p in paras)
+        paras = soup.find_all("p")
+        content = "\n".join(p.get_text(strip=True) for p in paras if p.get_text(strip=True))
 
-    result = {"title": title, "content": content[:6000], "url": url}
-    ARTICLE_CACHE[url] = result
+        result = {
+            "title": title,
+            "content": content[:6000],
+            "url": url
+        }
 
-    return result
+        ARTICLE_CACHE[url] = result
+        return result
+
+    except Exception as e:
+        logger.error(f"Article fetch error: {e}")
+        return {
+            "title": "Error",
+            "content": "",
+            "url": url
+        }
 
 
 async def generate_quiz_questions(article_title: str, article_content: str, num_questions: int = 10) -> list:
