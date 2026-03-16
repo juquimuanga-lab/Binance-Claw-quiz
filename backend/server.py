@@ -63,55 +63,44 @@ ARTICLE_CACHE: Dict[str, dict] = {}
 
 
 async def search_binance_academy(query: str) -> list:
+    query_lower = query.lower()
+
+    # 1. Try local index first
+    results = [
+        article for article in ARTICLES
+        if query_lower in article["title"].lower()
+    ]
+
+    if results:
+        return results[:15]
+
+    # 2. Fallback to Gemini (live search)
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
-Suggest 5 Binance Academy articles related to the topic "{query}".
+Suggest 5 Binance Academy article URLs about "{query}".
 
-Return ONLY valid JSON in this format:
-
+Return JSON only:
 [
-  {{
-    "title": "What Is Bitcoin?",
-    "url": "https://academy.binance.com/en/articles/what-is-bitcoin"
-  }}
+  {{"title":"...","url":"https://academy.binance.com/en/articles/..."}}
 ]
 """
 
         response = model.generate_content(prompt)
+        text = response.text
 
-        text = response.text.strip()
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        results = json.loads(match.group())
 
-        # remove markdown if present
-        if text.startswith("```"):
-            text = re.sub(r'^```[a-zA-Z]*', '', text)
-            text = text.replace("```", "").strip()
+        # 🔥 Save to cache (important)
+        ARTICLES.extend(results)
 
-        # try to find JSON array
-        match = re.search(r'\[[\s\S]*\]', text)
-
-        if match:
-            json_text = match.group()
-        else:
-            json_text = text
-
-        results = json.loads(json_text)
-
-        # validate structure
-        cleaned = []
-        for r in results:
-            if isinstance(r, dict) and "title" in r and "url" in r:
-                cleaned.append({
-                    "title": str(r["title"]),
-                    "url": str(r["url"])
-                })
-
-        return cleaned[:10]
+        return results
 
     except Exception as e:
-        logger.error(f"Gemini search error: {e}")
-        return []
+        logger.error(e)
+        return ARTICLES[:5]  # fallback fallback
 
 
 async def fetch_article_content(url: str) -> dict:
