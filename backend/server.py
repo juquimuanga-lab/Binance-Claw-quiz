@@ -63,28 +63,35 @@ ARTICLE_CACHE: Dict[str, dict] = {}
 
 
 async def search_binance_academy(query: str) -> list:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    results = []
+    url = "https://academy.binance.com/bapi/composite/v1/public/academy/search/articles"
+
+    params = {
+        "keyword": query,
+        "pageNo": 1,
+        "pageSize": 10
+    }
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as http:
-            resp = await http.get(ACADEMY_BASE, headers=headers)
-            soup = BeautifulSoup(resp.text, 'lxml')
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url, params=params)
 
-            seen = set()
-            for a in soup.find_all('a', href=True):
-                href = a.get('href', '')
-                if '/academy/articles/' in href:
-                    text = a.get_text(strip=True)
-                    if text and text not in seen:
-                        seen.add(text)
-                        full_url = href if href.startswith('http') else f"https://www.binance.com{href}"
-                        results.append({"title": text, "url": full_url})
+        data = r.json()
+
+        articles = data.get("data", {}).get("articles", [])
+
+        results = []
+
+        for a in articles:
+            results.append({
+                "title": a.get("title"),
+                "url": f"https://academy.binance.com/en/articles/{a.get('code')}"
+            })
+
+        return results
 
     except Exception as e:
-        logger.error(e)
-
-    return results[:15]
+        logger.error(f"Academy API error: {e}")
+        return []
 
 
 async def fetch_article_content(url: str) -> dict:
