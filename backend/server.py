@@ -52,8 +52,8 @@ class ArticleFetchRequest(BaseModel):
 
 class GenerateQuizRequest(BaseModel):
     article_url: str
-    article_title: str
-    article_content: str
+    article_title: Optional[str] = None
+    article_content: Optional[str] = None
     num_questions: int = 10
 
 # ================= SEARCH =================
@@ -243,23 +243,36 @@ async def get_article(req: ArticleFetchRequest):
 @api_router.post("/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
 
-    questions = await generate_quiz_questions(
-        req.article_title,
-        req.article_content,
-        req.num_questions
-    )
+    try:
+        # 🔥 fallback: fetch article if content missing
+        if not req.article_content:
+            article = await fetch_article_content(req.article_url)
+            title = article["title"]
+            content = article["content"]
+        else:
+            title = req.article_title
+            content = req.article_content
 
-    doc = {
-        "quiz_id": f"quiz_{secrets.token_hex(8)}",
-        "article_title": req.article_title,
-        "questions": questions,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
+        questions = await generate_quiz_questions(
+            title,
+            content,
+            req.num_questions
+        )
 
-    await db.quizzes.insert_one(doc)
-    doc.pop("_id", None)
+        doc = {
+            "quiz_id": f"quiz_{secrets.token_hex(8)}",
+            "article_title": title,
+            "questions": questions,
+        }
 
-    return doc
+        await db.quizzes.insert_one(doc)
+        doc.pop("_id", None)
+
+        return doc
+
+    except Exception as e:
+        logger.error(f"Quiz endpoint error: {e}")
+        raise HTTPException(status_code=500, detail="Quiz failed")
 
 # ================= APP =================
 
