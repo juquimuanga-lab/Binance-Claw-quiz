@@ -172,7 +172,6 @@ Make it clear and informative.
 # ================= QUIZ =================
 
 async def generate_quiz_questions(title: str, content: str, num: int):
-async def generate_quiz_questions(title: str, content: str, num: int):
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
