@@ -236,18 +236,18 @@ Context:
 
         return cleaned[:num]
 
-    except Exception as e:
-      logger.error(f"Quiz endpoint error: {str(e)}")
+      except Exception as e:
+        logger.error(f"Quiz error: {str(e)}")
 
-      # 🔥 fallback so frontend NEVER break
-      return [
-        {
-            "question": f"What is {title}?",
-            "options": ["A crypto concept", "A food", "A car", "A game"],
-            "correct": 0,
-            "explanation": "Fallback question"
-        }
-    ]
+        # 🔥 fallback so frontend NEVER breaks
+        return [
+            {
+                "question": f"What is {title}?",
+                "options": ["A crypto concept", "A food", "A car", "A game"],
+                "correct": 0,
+                "explanation": "Fallback question"
+            }
+        ]
 # ================= ROUTES =================
 
 @app.get("/")
