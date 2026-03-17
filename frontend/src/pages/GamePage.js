@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
 import { fireCelebration } from '@/utils/celebration';
 
-const API = process.env.REACT_APP_BACKEND_URL;
+// ✅ FIXED: fallback to window.location.origin prevents crash if env var is missing
+const API = process.env.REACT_APP_BACKEND_URL || window.location.origin;
 const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
 
 const COLORS = ['#FF2E63', '#00F0FF', '#F3BA2F', '#00FF29'];
@@ -15,7 +16,8 @@ export default function GamePage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const role = searchParams.get('role') || 'player';
-  const playerId = searchParams.get('pid') || `host_${code}`;
+  // ✅ FIXED: pid now correctly read from URL (HostPage passes pid=host_${code})
+  const playerId = searchParams.get('pid') || `player_${Math.random().toString(36).slice(2, 7)}`;
   const isHost = role === 'host';
 
   const [state, setState] = useState('lobby');
