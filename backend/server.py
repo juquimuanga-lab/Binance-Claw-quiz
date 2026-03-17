@@ -175,7 +175,6 @@ async def generate_quiz_questions(title: str, content: str, num: int):
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        # STEP 1 — SUMMARIZE
         summary_prompt = f"""
 Summarize this crypto article in 200 words:
 
@@ -184,17 +183,8 @@ Summarize this crypto article in 200 words:
         summary_res = model.generate_content(summary_prompt)
         summary = summary_res.text
 
-        # STEP 2 — GENERATE QUIZ
         quiz_prompt = f"""
-You are creating a Kahoot-style crypto quiz.
-
-Generate {num} engaging multiple-choice questions.
-
-Rules:
-- Mix easy, medium, and hard questions
-- Some questions should be tricky
-- Keep questions short and exciting
-- Avoid obvious answers
+Generate {num} multiple choice questions.
 
 Return JSON:
 [
@@ -202,44 +192,27 @@ Return JSON:
   "question":"...",
   "options":["A","B","C","D"],
   "correct":0,
-  "explanation":"Short explanation"
+  "explanation":"..."
  }}
 ]
 
 Context:
 {summary}
 """
-
         response = model.generate_content(quiz_prompt)
         text = response.text
 
         match = re.search(r'\[[\s\S]*\]', text)
-
         if not match:
-            raise ValueError("No JSON returned from AI")
+            raise ValueError("No JSON returned")
 
         questions = json.loads(match.group())
 
-        cleaned = []
-        for q in questions:
-            if (
-                isinstance(q, dict)
-                and "question" in q
-                and "options" in q
-                and "correct" in q
-                and len(q["options"]) == 4
-            ):
-                cleaned.append(q)
+        return questions[:num]
 
-        if not cleaned:
-            raise ValueError("No valid questions")
-
-        return cleaned[:num]
-
-      except Exception as e:
+    except Exception as e:
         logger.error(f"Quiz error: {str(e)}")
 
-        # 🔥 fallback so frontend NEVER breaks
         return [
             {
                 "question": f"What is {title}?",
