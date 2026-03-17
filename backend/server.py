@@ -244,8 +244,7 @@ except Exception as e:
             raise ValueError("No valid questions")
 
         return cleaned[:num]
-
-    except Exception as e:
+except Exception as e:
         logger.error(f"Quiz error: {e}")
         raise HTTPException(status_code=500, detail="Quiz generation failed")
 
