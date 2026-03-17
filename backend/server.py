@@ -240,6 +240,9 @@ Context:
 @api_router.get("/health")
 async def health():
     return {"status": "ok"}
+    @app.get("/")
+async def root():
+    return {"message": "API is live"}
 
 @api_router.get("/academy/search")
 async def search_academy(q: str = Query(...)):
