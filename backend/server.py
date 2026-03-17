@@ -172,18 +172,18 @@ Make it clear and informative.
 # ================= QUIZ =================
 
 async def generate_quiz_questions(title: str, content: str, num: int):
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
 
-        summary_prompt = f"""
+    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    summary_prompt = f"""
 Summarize this crypto article in 200 words:
 
 {content[:4000]}
 """
-        summary_res = model.generate_content(summary_prompt)
-        summary = summary_res.text
+    summary_res = model.generate_content(summary_prompt)
+    summary = summary_res.text
 
-        quiz_prompt = f"""
+    quiz_prompt = f"""
 Generate {num} multiple choice questions.
 
 Return JSON:
@@ -199,28 +199,16 @@ Return JSON:
 Context:
 {summary}
 """
-        response = model.generate_content(quiz_prompt)
-        text = response.text
+    response = model.generate_content(quiz_prompt)
+    text = response.text
 
-        match = re.search(r'\[[\s\S]*\]', text)
-        if not match:
-            raise ValueError("No JSON returned")
+    match = re.search(r'\[[\s\S]*\]', text)
+    if not match:
+        raise HTTPException(status_code=500, detail="No quiz generated")
 
-        questions = json.loads(match.group())
+    questions = json.loads(match.group())
 
-        return questions[:num]
-
-    except Exception as e:
-        logger.error(f"Quiz error: {str(e)}")
-
-        return [
-            {
-                "question": f"What is {title}?",
-                "options": ["A crypto concept", "A food", "A car", "A game"],
-                "correct": 0,
-                "explanation": "Fallback question"
-            }
-        ]
+    return questions[:num]
 # ================= ROUTES =================
 
 @app.get("/")
