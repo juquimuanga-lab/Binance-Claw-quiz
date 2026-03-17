@@ -31,20 +31,15 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 app = FastAPI()
 
-# ✅ ADD THIS HERE
+app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://binance-claw-quiz-app.onrender.com",
-        "http://localhost:3000",
-        "*"
-    ],
+    allow_origins=["*"],  # keep simple for now
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
