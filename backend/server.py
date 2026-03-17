@@ -218,10 +218,15 @@ Context:
 
         match = re.search(r'\[[\s\S]*\]', text)
 
-        if not match:
-            raise ValueError("No JSON returned")
+if not match:
+    logger.error(f"Bad Gemini response: {text}")
+    raise ValueError("Invalid AI response")
 
-        questions = json.loads(match.group())
+try:
+    questions = json.loads(match.group())
+except Exception as e:
+    logger.error(f"JSON parse error: {text}")
+    raise ValueError("Failed to parse quiz JSON")
 
         # validation (VERY IMPORTANT)
         cleaned = []
@@ -299,8 +304,8 @@ async def generate_quiz(req: GenerateQuizRequest):
         return doc
 
     except Exception as e:
-        logger.error(f"Quiz endpoint error: {e}")
-        raise HTTPException(status_code=500, detail="Quiz failed")
+    logger.error(f"Quiz endpoint error: {str(e)}")
+    return {"error": str(e)}
 
 # ================= APP =================
 app.include_router(api_router)
