@@ -4,7 +4,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Search, ArrowLeft, Loader2, BookOpen, Sparkles, X, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API =
+  process.env.REACT_APP_BACKEND_URL ||
+  "https://binance-claw-quiz-api.onrender.com";
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
 
 const LOADING_MESSAGES = [
@@ -141,11 +143,9 @@ export default function HostPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          article_url: selectedArticle.url,
-          article_title: articleContent?.title || selectedArticle.title,
-          article_content: articleContent?.content || '',
-          num_questions: 10,
-        }),
+  article_url: selectedArticle.url,
+  num_questions: 10
+}),
         signal: abortRef.current.signal,
       });
       if (!quizRes.ok) {
