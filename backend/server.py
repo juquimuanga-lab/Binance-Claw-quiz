@@ -238,7 +238,7 @@ Context:
 
     except Exception as e:
       logger.error(f"Quiz endpoint error: {str(e)}")
-      raise HTTPException(status_code=500, detail="Quiz failed")
+      
 
         # 🔥 fallback so frontend NEVER breaks
         return [
