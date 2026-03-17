@@ -28,10 +28,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
-api_router = APIRouter(prefix="/api")
-app = FastAPI()
-
-app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +36,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -286,3 +284,4 @@ async def generate_quiz(req: GenerateQuizRequest):
         raise HTTPException(status_code=500, detail="Quiz failed")
 
 # ================= APP =================
+app.include_router(api_router)
