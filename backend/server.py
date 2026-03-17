@@ -10,7 +10,7 @@ import httpx
 import re
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Optional
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 import google.generativeai as genai
