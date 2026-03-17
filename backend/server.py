@@ -61,7 +61,7 @@ class GenerateQuizRequest(BaseModel):
 async def search_binance_academy(query: str) -> list:
     query_lower = query.lower()
 
-    # Local search first
+    # 1️⃣ local search
     local_results = [
         article for article in ARTICLES
         if query_lower in article["title"].lower()
@@ -70,21 +70,21 @@ async def search_binance_academy(query: str) -> list:
     if local_results:
         return local_results[:10]
 
-    # Gemini fallback (SAFE)
+    # 2️⃣ Gemini dynamic topics (REAL FIX)
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         prompt = f"""
-Suggest Binance Academy article titles for: {query}
+Generate 5 Binance Academy-style crypto topics related to: "{query}"
 
 Return JSON:
 [
-  {{"title":"...","url":"https://academy.binance.com/en/articles/..."}}
+  {{"title":"What Is Bitcoin?","url":"https://academy.binance.com/en/articles/what-is-bitcoin"}}
 ]
 """
 
         response = model.generate_content(prompt)
-        text = response.text.strip()
+        text = response.text
 
         match = re.search(r'\[[\s\S]*\]', text)
 
@@ -98,13 +98,13 @@ Return JSON:
             if "title" in item and "url" in item:
                 results.append(item)
 
-        if results:
-            ARTICLES.extend(results)
+        # cache new topics
+        ARTICLES.extend(results)
 
-        return results if results else ARTICLES
+        return results
 
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        logger.error(e)
         return ARTICLES
 
 # ================= FETCH ARTICLE =================
@@ -145,30 +145,73 @@ async def fetch_article_content(url: str) -> dict:
 # ================= QUIZ =================
 
 async def generate_quiz_questions(title: str, content: str, num: int):
+
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        prompt = f"""
-Create {num} quiz questions from this:
+        # STEP 1 — SUMMARIZE (IMPORTANT)
+        summary_prompt = f"""
+Summarize this crypto article in 200 words:
 
-Title: {title}
-Content: {content[:3000]}
+{content[:4000]}
+"""
+
+        summary_res = model.generate_content(summary_prompt)
+        summary = summary_res.text
+
+        # STEP 2 — GENERATE GAME-QUALITY QUIZ
+        quiz_prompt = f"""
+You are creating a Kahoot-style crypto quiz.
+
+Generate {num} engaging multiple-choice questions.
+
+Rules:
+- Mix easy, medium, and hard questions
+- Some questions should be tricky
+- Keep questions short and exciting
+- Avoid obvious answers
+- Make it feel like a game show
 
 Return JSON:
 [
- {{"question":"...","options":["A","B","C","D"],"correct":0,"explanation":"..."}}
+ {{
+  "question":"...",
+  "options":["A","B","C","D"],
+  "correct":0,
+  "explanation":"Short explanation"
+ }}
 ]
+
+Context:
+{summary}
 """
 
-        response = model.generate_content(prompt)
+        response = model.generate_content(quiz_prompt)
         text = response.text
 
         match = re.search(r'\[[\s\S]*\]', text)
 
         if not match:
-            raise ValueError("No JSON")
+            raise ValueError("No JSON returned")
 
-        return json.loads(match.group())
+        questions = json.loads(match.group())
+
+        # validation (VERY IMPORTANT)
+        cleaned = []
+        for q in questions:
+            if (
+                isinstance(q, dict)
+                and "question" in q
+                and "options" in q
+                and "correct" in q
+                and len(q["options"]) == 4
+            ):
+                cleaned.append(q)
+
+        if not cleaned:
+            raise ValueError("No valid questions")
+
+        return cleaned[:num]
 
     except Exception as e:
         logger.error(f"Quiz error: {e}")
