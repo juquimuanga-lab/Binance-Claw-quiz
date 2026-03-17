@@ -59,86 +59,95 @@ class GenerateQuizRequest(BaseModel):
 # ================= SEARCH =================
 
 async def search_binance_academy(query: str) -> list:
-    query_lower = query.lower()
+    query = query.lower()
 
-    # 1️⃣ local search
-    local_results = [
-        article for article in ARTICLES
-        if query_lower in article["title"].lower()
-    ]
+    # 🔥 Smart topic mapping (guaranteed real articles)
+    mapping = {
+        "bitcoin": "what-is-bitcoin",
+        "ethereum": "what-is-ethereum",
+        "defi": "what-is-defi",
+        "nft": "what-are-nfts",
+        "staking": "what-is-staking",
+        "blockchain": "what-is-blockchain",
+        "web3": "what-is-web3",
+        "wallet": "crypto-wallet-types-explained",
+        "trading": "spot-trading-explained",
+        "security": "crypto-security"
+    }
 
-    if local_results:
-        return local_results[:10]
+    results = []
 
-    # 2️⃣ Gemini dynamic topics (REAL FIX)
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+    for key, slug in mapping.items():
+        if key in query:
+            results.append({
+                "title": key.title(),
+                "url": f"https://academy.binance.com/en/articles/{slug}"
+            })
 
-        prompt = f"""
-Generate 5 Binance Academy-style crypto topics related to: "{query}"
+    # fallback → show multiple
+    if not results:
+        results = [
+            {
+                "title": k.title(),
+                "url": f"https://academy.binance.com/en/articles/{v}"
+            }
+            for k, v in mapping.items()
+        ]
 
-Return JSON:
-[
-  {{"title":"What Is Bitcoin?","url":"https://academy.binance.com/en/articles/what-is-bitcoin"}}
-]
-"""
-
-        response = model.generate_content(prompt)
-        text = response.text
-
-        match = re.search(r'\[[\s\S]*\]', text)
-
-        if not match:
-            return ARTICLES
-
-        data = json.loads(match.group())
-
-        results = []
-        for item in data:
-            if "title" in item and "url" in item:
-                results.append(item)
-
-        # cache new topics
-        ARTICLES.extend(results)
-
-        return results
-
-    except Exception as e:
-        logger.error(e)
-        return ARTICLES
+    return results[:10]
 
 # ================= FETCH ARTICLE =================
 
 async def fetch_article_content(url: str) -> dict:
-    if url in ARTICLE_CACHE:
-        return ARTICLE_CACHE[url]
-
     try:
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(headers={
+            "User-Agent": "Mozilla/5.0"
+        }) as http:
             resp = await http.get(url)
 
-        soup = BeautifulSoup(resp.text, 'lxml')
+        soup = BeautifulSoup(resp.text, "lxml")
 
+        # safer title
         h1 = soup.find("h1")
         title = h1.get_text(strip=True) if h1 else "Crypto Article"
 
-        paras = soup.find_all("p")
-        content = "\n".join(p.get_text(strip=True) for p in paras[:50])
+        # 🔥 better extraction
+        paragraphs = soup.find_all(["p", "h2", "h3"])
 
-        result = {
+        content = "\n".join(
+            p.get_text(strip=True)
+            for p in paragraphs
+            if len(p.get_text(strip=True)) > 50
+        )
+
+        if len(content) < 200:
+            raise ValueError("Content too small")
+
+        return {
             "title": title,
-            "content": content,
+            "content": content[:6000],
             "url": url
         }
 
-        ARTICLE_CACHE[url] = result
-        return result
-
     except Exception as e:
-        logger.error(f"Fetch error: {e}")
+        logger.error(f"Scrape failed, using AI fallback: {e}")
+
+        # 🔥 fallback = AI generated content
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        prompt = f"""
+Write a 400-word educational crypto article about:
+
+{url.split("/")[-1].replace("-", " ")}
+
+Make it clear and informative.
+"""
+
+        res = model.generate_content(prompt)
+
         return {
-            "title": "Error",
-            "content": "",
+            "title": url.split("/")[-1].replace("-", " ").title(),
+            "content": res.text,
             "url": url
         }
 
