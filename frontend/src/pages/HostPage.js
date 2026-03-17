@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, ArrowLeft, Loader2, BookOpen, Sparkles, X, RefreshCw } from 'lucide-react';
+import { Search, ArrowLeft, Loader2, BookOpen, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 const API =
@@ -129,6 +129,7 @@ export default function HostPage() {
     }
   };
 
+  // ✅ FIXED: single call to session/create — no more double quiz generation
   const generateAndCreate = async () => {
     if (!hostName.trim()) {
       toast.error('Enter your name');
@@ -139,33 +140,27 @@ export default function HostPage() {
 
     abortRef.current = new AbortController();
     try {
-      const quizRes = await fetch(`${API}/api/quiz/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-  article_url: selectedArticle.url,
-  num_questions: 10
-}),
-        signal: abortRef.current.signal,
-      });
-      if (!quizRes.ok) {
-        const errData = await quizRes.json().catch(() => ({}));
-        throw new Error(errData.detail || 'Quiz generation failed. Please try again.');
-      }
-      const quiz = await quizRes.json();
-
       const sessionRes = await fetch(`${API}/api/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host_name: hostName, quiz_id: quiz.quiz_id }),
+        body: JSON.stringify({
+          article_url: selectedArticle.url,
+          article_title: articleContent?.title || selectedArticle?.title,
+          article_content: articleContent?.content || null,
+          num_questions: 10,
+        }),
         signal: abortRef.current.signal,
       });
+
       if (!sessionRes.ok) {
         const errData = await sessionRes.json().catch(() => ({}));
         throw new Error(errData.detail || 'Session creation failed');
       }
+
       const session = await sessionRes.json();
-      navigate(`/game/${session.code}?role=host`);
+      // ✅ pid included so GamePage correctly identifies the host
+      navigate(`/game/${session.code}?role=host&pid=host_${session.code}`);
+
     } catch (err) {
       if (err.name !== 'AbortError') {
         toast.error(err.message || 'Something went wrong');
