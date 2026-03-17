@@ -223,10 +223,33 @@ Context:
         ]
 # ================= ROUTES =================
 
+@app.get("/")
+async def root():
+    return {"message": "API is live"}
+
+from fastapi.responses import Response
+
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str):
+    return Response()
+    
+@api_router.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@api_router.get("/academy/search")
+async def search_academy(q: str = Query(...)):
+    return {"results": await search_binance_academy(q)}
+
+@api_router.post("/academy/article")
+async def get_article(req: ArticleFetchRequest):
+    return await fetch_article_content(req.url)
+
 @api_router.post("/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
 
     try:
+        # 🔥 fallback: fetch article if content missing
         if not req.article_content:
             article = await fetch_article_content(req.article_url)
             title = article["title"]
@@ -253,7 +276,7 @@ async def generate_quiz(req: GenerateQuizRequest):
         return doc
 
     except Exception as e:
-        logger.error(f"Quiz endpoint error: {str(e)}")  # ← indented
+        logger.error(f"Quiz endpoint error: {str(e)}")
         return {"error": str(e)}                        # ← indented
 # ================= APP =================
 app.include_router(api_router)
