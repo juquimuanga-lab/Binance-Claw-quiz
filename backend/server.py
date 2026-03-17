@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -29,23 +30,15 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
+# ✅ SINGLE clean CORS setup — removed the duplicate middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,  # IMPORTANT
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-from fastapi.responses import Response
-from fastapi import Request
 
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
@@ -79,7 +72,6 @@ class GenerateQuizRequest(BaseModel):
 async def search_binance_academy(query: str) -> list:
     query = query.lower()
 
-    # 🔥 Smart topic mapping (guaranteed real articles)
     mapping = {
         "bitcoin": "what-is-bitcoin",
         "ethereum": "what-is-ethereum",
@@ -102,7 +94,6 @@ async def search_binance_academy(query: str) -> list:
                 "url": f"https://academy.binance.com/en/articles/{slug}"
             })
 
-    # fallback → show multiple
     if not results:
         results = [
             {
@@ -118,20 +109,21 @@ async def search_binance_academy(query: str) -> list:
 
 async def fetch_article_content(url: str) -> dict:
     try:
-        async with httpx.AsyncClient(headers={
-            "User-Agent": "Mozilla/5.0"
-        }) as http:
+        # ✅ Fixed: timeout added + resp.text accessed inside the async with block
+        async with httpx.AsyncClient(
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15.0,
+            follow_redirects=True
+        ) as http:
             resp = await http.get(url)
+            raw_html = resp.text  # ✅ read inside the context manager
 
-        soup = BeautifulSoup(resp.text, "lxml")
+        soup = BeautifulSoup(raw_html, "lxml")
 
-        # safer title
         h1 = soup.find("h1")
         title = h1.get_text(strip=True) if h1 else "Crypto Article"
 
-        # 🔥 better extraction
         paragraphs = soup.find_all(["p", "h2", "h3"])
-
         content = "\n".join(
             p.get_text(strip=True)
             for p in paragraphs
@@ -150,9 +142,7 @@ async def fetch_article_content(url: str) -> dict:
     except Exception as e:
         logger.error(f"Scrape failed, using AI fallback: {e}")
 
-        # 🔥 fallback = AI generated content
         model = genai.GenerativeModel("gemini-1.5-flash")
-
         prompt = f"""
 Write a 400-word educational crypto article about:
 
@@ -160,7 +150,6 @@ Write a 400-word educational crypto article about:
 
 Make it clear and informative.
 """
-
         res = model.generate_content(prompt)
 
         return {
@@ -207,12 +196,10 @@ Context:
             raise ValueError("No JSON returned")
 
         questions = json.loads(match.group())
-
         return questions[:num]
 
     except Exception as e:
         logger.error(f"Quiz error: {str(e)}")
-
         return [
             {
                 "question": f"What is {title}?",
@@ -221,18 +208,25 @@ Context:
                 "explanation": "Fallback question"
             }
         ]
+
 # ================= ROUTES =================
 
 @app.get("/")
 async def root():
     return {"message": "API is live"}
 
-from fastapi.responses import Response
-
+# ✅ OPTIONS preflight handler stays
 @app.options("/{full_path:path}")
 async def preflight_handler(full_path: str):
-    return Response()
-    
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @api_router.get("/health")
 async def health():
     return {"status": "ok"}
@@ -247,9 +241,7 @@ async def get_article(req: ArticleFetchRequest):
 
 @api_router.post("/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
-
     try:
-        # 🔥 fallback: fetch article if content missing
         if not req.article_content:
             article = await fetch_article_content(req.article_url)
             title = article["title"]
@@ -277,6 +269,7 @@ async def generate_quiz(req: GenerateQuizRequest):
 
     except Exception as e:
         logger.error(f"Quiz endpoint error: {str(e)}")
-        return {"error": str(e)}                        # ← indented
+        return {"error": str(e)}
+
 # ================= APP =================
 app.include_router(api_router)
