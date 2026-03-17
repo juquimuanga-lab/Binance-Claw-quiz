@@ -174,20 +174,19 @@ Make it clear and informative.
 async def generate_quiz_questions(title: str, content: str, num: int):
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
-        # STEP 1 — SUMMARIZE (IMPORTANT)
-        summary_prompt = f"""
+    # STEP 1 — SUMMARIZE
+    summary_prompt = f"""
 Summarize this crypto article in 200 words:
 
 {content[:4000]}
 """
+    summary_res = model.generate_content(summary_prompt)
+    summary = summary_res.text
 
-        summary_res = model.generate_content(summary_prompt)
-        summary = summary_res.text
-
-        # STEP 2 — GENERATE GAME-QUALITY QUIZ
-        quiz_prompt = f"""
+    # STEP 2 — GENERATE QUIZ
+    quiz_prompt = f"""
 You are creating a Kahoot-style crypto quiz.
 
 Generate {num} engaging multiple-choice questions.
@@ -213,40 +212,41 @@ Context:
 {summary}
 """
 
-        response = model.generate_content(quiz_prompt)
-        text = response.text
+    response = model.generate_content(quiz_prompt)
+    text = response.text
 
-        match = re.search(r'\[[\s\S]*\]', text)
+    match = re.search(r'\[[\s\S]*\]', text)
 
-if not match:
-    logger.error(f"Bad Gemini response: {text}")
-    raise ValueError("Invalid AI response")
+    if not match:
+        logger.error(f"Bad Gemini response: {text}")
+        raise ValueError("No JSON returned")
 
-try:
-    questions = json.loads(match.group())
+    try:
+        questions = json.loads(match.group())
+    except Exception:
+        logger.error(f"JSON parse error: {text}")
+        raise ValueError("Invalid JSON format")
+
+    # validation
+    cleaned = []
+    for q in questions:
+        if (
+            isinstance(q, dict)
+            and "question" in q
+            and "options" in q
+            and "correct" in q
+            and len(q["options"]) == 4
+        ):
+            cleaned.append(q)
+
+    if not cleaned:
+        raise ValueError("No valid questions")
+
+    return cleaned[:num]
+
 except Exception as e:
-    logger.error(f"JSON parse error: {text}")
-    raise ValueError("Failed to parse quiz JSON")
-
-        # validation (VERY IMPORTANT)
-        cleaned = []
-        for q in questions:
-            if (
-                isinstance(q, dict)
-                and "question" in q
-                and "options" in q
-                and "correct" in q
-                and len(q["options"]) == 4
-            ):
-                cleaned.append(q)
-
-        if not cleaned:
-            raise ValueError("No valid questions")
-
-        return cleaned[:num]
-except Exception as e:
-        logger.error(f"Quiz error: {e}")
-        raise HTTPException(status_code=500, detail="Quiz generation failed")
+    logger.error(f"Quiz error: {str(e)}")
+    raise HTTPException(status_code=500, detail="Quiz generation failed")
 
 # ================= ROUTES =================
 
