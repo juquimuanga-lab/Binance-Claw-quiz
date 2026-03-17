@@ -237,10 +237,10 @@ Context:
         return cleaned[:num]
 
     except Exception as e:
-    logger.error(f"Quiz endpoint error: {str(e)}")
+      logger.error(f"Quiz endpoint error: {str(e)}")
 
-    # 🔥 fallback so frontend NEVER break
-    return [
+      # 🔥 fallback so frontend NEVER break
+      return [
         {
             "question": f"What is {title}?",
             "options": ["A crypto concept", "A food", "A car", "A game"],
