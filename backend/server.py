@@ -241,7 +241,12 @@ Context:
 async def root():
     return {"message": "API is live"}
 
+from fastapi.responses import Response
 
+@app.options("/{full_path:path}")
+async def preflight_handler(full_path: str):
+    return Response()
+    
 @api_router.get("/health")
 async def health():
     return {"status": "ok"}
