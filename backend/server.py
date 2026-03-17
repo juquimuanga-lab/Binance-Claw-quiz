@@ -172,9 +172,8 @@ Make it clear and informative.
 # ================= QUIZ =================
 
 async def generate_quiz_questions(title: str, content: str, num: int):
-
-try:
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
     # STEP 1 — SUMMARIZE
     summary_prompt = f"""
@@ -247,7 +246,6 @@ Context:
 except Exception as e:
     logger.error(f"Quiz error: {str(e)}")
     raise HTTPException(status_code=500, detail="Quiz generation failed")
-
 # ================= ROUTES =================
 
 @app.get("/")
