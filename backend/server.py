@@ -173,7 +173,7 @@ Make it clear and informative.
 
 async def generate_quiz_questions(title: str, content: str, num: int):
 
-    try:
+try:
     model = genai.GenerativeModel("gemini-1.5-flash")
 
     # STEP 1 — SUMMARIZE
