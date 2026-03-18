@@ -11,6 +11,7 @@ import httpx
 import re
 import datetime
 import asyncio
+import random
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, Optional
@@ -265,34 +266,234 @@ class AgentJoinRequest(BaseModel):
     code: str
     nickname: str
 
+# ================= ARTICLE LIBRARY =================
+
+ARTICLE_LIBRARY = {
+    # ── BASICS ──
+    "bitcoin": "what-is-bitcoin",
+    "ethereum": "what-is-ethereum",
+    "blockchain": "what-is-blockchain",
+    "cryptocurrency": "what-is-cryptocurrency",
+    "crypto": "what-is-cryptocurrency",
+    "binance": "what-is-binance",
+    "bnb": "what-is-bnb",
+
+    # ── DEFI ──
+    "defi": "what-is-defi",
+    "decentralized finance": "what-is-defi",
+    "yield farming": "what-is-yield-farming",
+    "liquidity pool": "what-is-liquidity-pool",
+    "amm": "what-is-an-automated-market-maker-amm",
+    "automated market maker": "what-is-an-automated-market-maker-amm",
+    "dex": "what-is-a-decentralized-exchange-dex",
+    "decentralized exchange": "what-is-a-decentralized-exchange-dex",
+    "uniswap": "what-is-uniswap-and-how-does-it-work",
+    "pancakeswap": "what-is-pancakeswap-and-how-does-it-work",
+    "flash loan": "what-are-flash-loans",
+    "lending": "what-is-crypto-lending",
+    "impermanent loss": "impermanent-loss-explained",
+    "tvl": "what-is-total-value-locked-tvl",
+
+    # ── NFT & WEB3 ──
+    "nft": "what-are-nfts",
+    "non fungible token": "what-are-nfts",
+    "web3": "what-is-web3",
+    "metaverse": "what-is-the-metaverse",
+    "gamefi": "what-is-gamefi-and-how-does-it-work",
+    "play to earn": "what-is-gamefi-and-how-does-it-work",
+    "dao": "decentralized-autonomous-organizations-daos-explained",
+    "opensea": "what-is-opensea",
+    "mint": "what-does-minting-mean-in-crypto",
+    "minting": "what-does-minting-mean-in-crypto",
+
+    # ── LAYER 1 & LAYER 2 ──
+    "solana": "what-is-solana-sol",
+    "sol": "what-is-solana-sol",
+    "cardano": "what-is-cardano",
+    "ada": "what-is-cardano",
+    "polkadot": "what-is-polkadot-dot",
+    "dot": "what-is-polkadot-dot",
+    "avalanche": "what-is-avalanche-avax",
+    "avax": "what-is-avalanche-avax",
+    "polygon": "what-is-polygon-matic",
+    "matic": "what-is-polygon-matic",
+    "layer 2": "what-is-a-layer-2-blockchain",
+    "layer2": "what-is-a-layer-2-blockchain",
+    "rollup": "what-are-rollups",
+    "zk rollup": "what-are-zk-rollups",
+    "zero knowledge": "what-is-zero-knowledge-proof",
+    "arbitrum": "what-is-arbitrum",
+    "optimism": "what-is-optimism",
+    "lightning network": "what-is-the-lightning-network",
+    "bnb chain": "what-is-bnb-chain",
+    "bsc": "what-is-bnb-chain",
+
+    # ── TRADING ──
+    "trading": "a-complete-guide-to-cryptocurrency-trading-for-beginners",
+    "spot trading": "spot-trading-explained",
+    "futures": "what-are-futures",
+    "futures trading": "what-are-futures",
+    "margin trading": "what-is-margin-trading",
+    "leverage": "what-is-margin-trading",
+    "technical analysis": "a-complete-guide-to-cryptocurrency-technical-analysis",
+    "candlestick": "a-beginners-guide-to-candlestick-charts",
+    "chart": "a-beginners-guide-to-candlestick-charts",
+    "moving average": "moving-averages-explained",
+    "rsi": "what-is-the-rsi-indicator",
+    "macd": "macd-indicator-explained",
+    "bollinger": "what-are-bollinger-bands",
+    "order book": "what-is-an-order-book",
+    "limit order": "what-is-a-limit-order",
+    "stop loss": "what-is-a-stop-loss-order",
+    "dollar cost averaging": "what-is-dollar-cost-averaging-dca",
+    "dca": "what-is-dollar-cost-averaging-dca",
+    "risk management": "a-beginners-guide-to-understanding-risk-management",
+    "short selling": "what-is-short-selling-in-crypto",
+    "liquidation": "what-is-liquidation-in-crypto",
+
+    # ── STAKING & EARNING ──
+    "staking": "what-is-staking",
+    "proof of stake": "proof-of-stake-explained",
+    "pos": "proof-of-stake-explained",
+    "validator": "what-is-a-validator",
+    "earn": "binance-earn-explained",
+    "launchpool": "what-is-binance-launchpool",
+    "launchpad": "what-is-binance-launchpad",
+    "ieo": "what-is-an-initial-exchange-offering-ieo",
+
+    # ── CONSENSUS & TECH ──
+    "proof of work": "proof-of-work-explained",
+    "pow": "proof-of-work-explained",
+    "mining": "what-is-cryptocurrency-mining",
+    "hash": "what-is-hashing",
+    "hashing": "what-is-hashing",
+    "smart contract": "what-are-smart-contracts",
+    "smart contracts": "what-are-smart-contracts",
+    "oracle": "blockchain-oracles-explained",
+    "chainlink": "what-is-chainlink-link",
+    "consensus": "what-is-a-consensus-mechanism",
+    "merkle tree": "what-is-a-merkle-tree",
+    "gas": "what-is-gas-in-ethereum",
+    "gas fees": "what-is-gas-in-ethereum",
+    "evm": "what-is-ethereum-virtual-machine-evm",
+    "token": "what-is-a-token",
+    "tokenomics": "what-is-tokenomics",
+    "erc20": "what-is-erc-20",
+    "erc721": "what-is-erc-721",
+
+    # ── WALLETS & SECURITY ──
+    "wallet": "crypto-wallet-types-explained",
+    "crypto wallet": "crypto-wallet-types-explained",
+    "hardware wallet": "what-is-a-hardware-wallet",
+    "seed phrase": "what-is-a-seed-phrase",
+    "private key": "what-is-a-private-key",
+    "public key": "what-is-a-public-key",
+    "security": "how-to-stay-safe-in-crypto",
+    "phishing": "what-is-a-phishing-attack",
+    "scam": "common-crypto-scams-and-how-to-avoid-them",
+    "rug pull": "what-is-a-rug-pull",
+    "two factor": "what-is-two-factor-authentication-2fa",
+    "2fa": "what-is-two-factor-authentication-2fa",
+    "kyc": "what-is-kyc",
+    "custodial": "custodial-vs-non-custodial-wallets",
+    "non custodial": "custodial-vs-non-custodial-wallets",
+
+    # ── STABLECOINS ──
+    "stablecoin": "what-are-stablecoins",
+    "stable coin": "what-are-stablecoins",
+    "usdt": "what-is-tether-usdt",
+    "tether": "what-is-tether-usdt",
+    "usdc": "what-is-usd-coin-usdc",
+    "algorithmic stablecoin": "what-are-algorithmic-stablecoins",
+    "terra": "what-is-terra-luna",
+    "luna": "what-is-terra-luna",
+
+    # ── MARKET CONCEPTS ──
+    "bull market": "what-is-a-bull-market",
+    "bear market": "what-is-a-bear-market",
+    "market cap": "what-is-market-capitalization",
+    "market capitalization": "what-is-market-capitalization",
+    "volume": "what-is-trading-volume",
+    "volatility": "what-is-volatility",
+    "hodl": "what-does-hodl-mean",
+    "fomo": "what-is-fomo",
+    "fud": "what-is-fud",
+    "pump and dump": "what-is-a-pump-and-dump-scheme",
+    "whale": "who-are-crypto-whales",
+    "altcoin": "what-is-an-altcoin",
+    "memecoin": "what-are-meme-coins",
+    "dogecoin": "what-is-dogecoin-doge",
+    "doge": "what-is-dogecoin-doge",
+    "shiba": "what-is-shiba-inu-shib",
+    "halving": "bitcoin-halving-explained",
+    "bitcoin halving": "bitcoin-halving-explained",
+    "dominance": "what-is-bitcoin-dominance",
+
+    # ── REGULATION & MACRO ──
+    "regulation": "what-is-crypto-regulation",
+    "cbdc": "what-is-a-cbdc",
+    "central bank digital currency": "what-is-a-cbdc",
+    "tax": "crypto-taxes-explained",
+    "crypto tax": "crypto-taxes-explained",
+    "etf": "what-is-a-bitcoin-etf",
+    "bitcoin etf": "what-is-a-bitcoin-etf",
+
+    # ── ADVANCED ──
+    "cross chain": "what-is-cross-chain",
+    "bridge": "what-is-a-blockchain-bridge",
+    "interoperability": "blockchain-interoperability-explained",
+    "cosmos": "what-is-cosmos",
+    "atom": "what-is-cosmos",
+    "derivatives": "what-are-crypto-derivatives",
+    "options": "what-are-crypto-options",
+    "perpetual": "what-are-perpetual-futures-contracts",
+    "funding rate": "what-is-a-funding-rate",
+    "copy trading": "what-is-copy-trading",
+    "arbitrage": "what-is-arbitrage",
+    "on chain": "what-is-on-chain-analysis",
+    "tokenization": "what-is-asset-tokenization",
+    "rwa": "what-is-asset-tokenization",
+    "real world asset": "what-is-asset-tokenization",
+    "ai crypto": "ai-and-crypto-explained",
+    "artificial intelligence": "ai-and-crypto-explained",
+    "soulbound": "what-are-soulbound-tokens",
+    "sbt": "what-are-soulbound-tokens",
+}
+
 # ================= SEARCH =================
 
 async def search_binance_academy(query: str) -> list:
-    query = query.lower()
-    mapping = {
-        "bitcoin": "what-is-bitcoin",
-        "ethereum": "what-is-ethereum",
-        "defi": "what-is-defi",
-        "nft": "what-are-nfts",
-        "staking": "what-is-staking",
-        "blockchain": "what-is-blockchain",
-        "web3": "what-is-web3",
-        "wallet": "crypto-wallet-types-explained",
-        "trading": "spot-trading-explained",
-        "security": "crypto-security"
-    }
+    query_lower = query.lower().strip()
     results = []
-    for key, slug in mapping.items():
-        if key in query:
+    seen_slugs = set()
+
+    for keyword, slug in ARTICLE_LIBRARY.items():
+        if keyword in query_lower and slug not in seen_slugs:
             results.append({
-                "title": key.title(),
+                "title": keyword.replace("-", " ").title(),
                 "url": f"https://academy.binance.com/en/articles/{slug}"
             })
+            seen_slugs.add(slug)
+
     if not results:
-        results = [
-            {"title": k.title(), "url": f"https://academy.binance.com/en/articles/{v}"}
-            for k, v in mapping.items()
+        popular = [
+            ("Bitcoin", "what-is-bitcoin"),
+            ("Ethereum", "what-is-ethereum"),
+            ("DeFi", "what-is-defi"),
+            ("NFTs", "what-are-nfts"),
+            ("Staking", "what-is-staking"),
+            ("Blockchain", "what-is-blockchain"),
+            ("Web3", "what-is-web3"),
+            ("Trading", "a-complete-guide-to-cryptocurrency-trading-for-beginners"),
+            ("Smart Contracts", "what-are-smart-contracts"),
+            ("Stablecoins", "what-are-stablecoins"),
         ]
+        for title, slug in popular:
+            results.append({
+                "title": title,
+                "url": f"https://academy.binance.com/en/articles/{slug}"
+            })
+
     return results[:10]
 
 # ================= FETCH ARTICLE =================
@@ -338,18 +539,33 @@ async def fetch_article_content(url: str) -> dict:
 
 async def generate_quiz_questions(title: str, content: str, num: int):
     try:
-        summary = groq_complete(f"Summarize this crypto article in 200 words:\n\n{content[:4000]}")
+        summary = groq_complete(
+            f"Summarize this crypto article in 200 words:\n\n{content[:4000]}"
+        )
+
         quiz_prompt = f"""
-Generate {num} multiple choice questions about this crypto topic.
-Return JSON only, no markdown, no backticks:
+You are a crypto quiz generator. Generate exactly {num} UNIQUE multiple choice questions.
+
+STRICT RULES:
+- Every question must be about a DIFFERENT aspect of the topic
+- No two questions can ask the same thing in different words
+- Questions must vary in difficulty: mix easy, medium and hard
+- Wrong answer options must be plausible but clearly incorrect
+- Never repeat the same wrong answer across questions
+- Cover different angles: definitions, how it works, use cases, history, risks, comparisons
+- Return JSON only, no markdown, no backticks, no text outside the array
+
+Format:
 [
  {{
-  "question":"...",
-  "options":["A","B","C","D"],
-  "correct":0,
-  "explanation":"..."
+  "question": "...",
+  "options": ["correct answer", "wrong1", "wrong2", "wrong3"],
+  "correct": 0,
+  "explanation": "...",
+  "difficulty": "easy|medium|hard"
  }}
 ]
+
 Topic: {title}
 Context: {summary}
 """
@@ -357,11 +573,33 @@ Context: {summary}
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"^```\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
+
         match = re.search(r'\[[\s\S]*\]', text)
         if not match:
             raise ValueError("No JSON array found")
+
         questions = json.loads(match.group())
-        return questions[:num]
+
+        # Deduplicate by question text
+        seen_questions = set()
+        unique_questions = []
+        for q in questions:
+            q_text = q.get("question", "").lower().strip()
+            if q_text and q_text not in seen_questions:
+                seen_questions.add(q_text)
+                unique_questions.append(q)
+
+        # Shuffle answer options so correct answer isn't always first
+        for q in unique_questions:
+            options = q.get("options", [])
+            correct_answer = options[q.get("correct", 0)] if options else None
+            if correct_answer and len(options) == 4:
+                random.shuffle(options)
+                q["options"] = options
+                q["correct"] = options.index(correct_answer)
+
+        return unique_questions[:num]
+
     except Exception as e:
         logger.error(f"Quiz generation error: {e}")
         return [
@@ -369,7 +607,8 @@ Context: {summary}
                 "question": f"What is {title}?",
                 "options": ["A blockchain concept", "A type of food", "A car brand", "A video game"],
                 "correct": 0,
-                "explanation": f"{title} is a concept in the crypto space."
+                "explanation": f"{title} is a concept in the crypto space.",
+                "difficulty": "easy"
             }
         ]
 
@@ -543,7 +782,6 @@ async def generate_quiz(req: GenerateQuizRequest):
         logger.error(f"Quiz endpoint error: {e}")
         return {"error": str(e)}
 
-# ✅ NEW — Solo quiz endpoint
 @app.post("/api/quiz/solo")
 async def solo_quiz(req: GenerateQuizRequest):
     try:
