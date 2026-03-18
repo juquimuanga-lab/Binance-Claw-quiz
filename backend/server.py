@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request, HTTPException
+from fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,9 +9,10 @@ import secrets
 import httpx
 import re
 import datetime
+import asyncio
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from bs4 import BeautifulSoup
 from groq import Groq
 
@@ -26,7 +27,6 @@ db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 GROQ_MODEL = "llama3-8b-8192"
 
 app = FastAPI()
@@ -53,6 +53,47 @@ async def cors_middleware(request: Request, call_next):
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ================= WEBSOCKET MANAGER =================
+
+class GameManager:
+    def __init__(self):
+        # code -> {player_id -> WebSocket}
+        self.rooms: Dict[str, Dict[str, WebSocket]] = {}
+        # code -> game state
+        self.game_state: Dict[str, dict] = {}
+
+    async def connect(self, code: str, player_id: str, ws: WebSocket):
+        await ws.accept()
+        if code not in self.rooms:
+            self.rooms[code] = {}
+        self.rooms[code][player_id] = ws
+
+    def disconnect(self, code: str, player_id: str):
+        if code in self.rooms:
+            self.rooms[code].pop(player_id, None)
+
+    async def broadcast(self, code: str, message: dict):
+        if code not in self.rooms:
+            return
+        dead = []
+        for pid, ws in self.rooms[code].items():
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(pid)
+        for pid in dead:
+            self.rooms[code].pop(pid, None)
+
+    async def send_to(self, code: str, player_id: str, message: dict):
+        ws = self.rooms.get(code, {}).get(player_id)
+        if ws:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                pass
+
+manager = GameManager()
 
 # ================= HELPERS =================
 
@@ -90,7 +131,6 @@ class SessionJoinRequest(BaseModel):
 
 async def search_binance_academy(query: str) -> list:
     query = query.lower()
-
     mapping = {
         "bitcoin": "what-is-bitcoin",
         "ethereum": "what-is-ethereum",
@@ -103,7 +143,6 @@ async def search_binance_academy(query: str) -> list:
         "trading": "spot-trading-explained",
         "security": "crypto-security"
     }
-
     results = []
     for key, slug in mapping.items():
         if key in query:
@@ -111,16 +150,11 @@ async def search_binance_academy(query: str) -> list:
                 "title": key.title(),
                 "url": f"https://academy.binance.com/en/articles/{slug}"
             })
-
     if not results:
         results = [
-            {
-                "title": k.title(),
-                "url": f"https://academy.binance.com/en/articles/{v}"
-            }
+            {"title": k.title(), "url": f"https://academy.binance.com/en/articles/{v}"}
             for k, v in mapping.items()
         ]
-
     return results[:10]
 
 # ================= FETCH ARTICLE =================
@@ -136,61 +170,40 @@ async def fetch_article_content(url: str) -> dict:
             raw_html = resp.text
 
         soup = BeautifulSoup(raw_html, "lxml")
-
         h1 = soup.find("h1")
         title = h1.get_text(strip=True) if h1 else "Crypto Article"
-
         paragraphs = soup.find_all(["p", "h2", "h3"])
         content = "\n".join(
-            p.get_text(strip=True)
-            for p in paragraphs
+            p.get_text(strip=True) for p in paragraphs
             if len(p.get_text(strip=True)) > 50
         )
-
         if len(content) >= 200:
-            logger.info(f"Scraped article OK: {title}")
-            return {
-                "title": title,
-                "content": content[:6000],
-                "url": url
-            }
-
+            return {"title": title, "content": content[:6000], "url": url}
         logger.warning("Scraped content too short, trying AI fallback")
-
     except Exception as e:
         logger.error(f"Scrape failed: {e}")
 
     try:
         topic = url.split("/")[-1].replace("-", " ")
-        prompt = f"Write a 400-word educational crypto article about: {topic}. Make it clear and informative."
-        text = groq_complete(prompt)
-        return {
-            "title": topic.title(),
-            "content": text,
-            "url": url
-        }
-
+        text = groq_complete(f"Write a 400-word educational crypto article about: {topic}.")
+        return {"title": topic.title(), "content": text, "url": url}
     except Exception as e:
         logger.error(f"Groq fallback failed: {e}")
         topic = url.split("/")[-1].replace("-", " ").title()
         return {
             "title": topic,
-            "content": f"{topic} is an important concept in the cryptocurrency and blockchain space. "
-                       f"Understanding {topic} is essential for anyone interested in the future of finance and technology.",
+            "content": f"{topic} is an important concept in the cryptocurrency and blockchain space.",
             "url": url
         }
 
-# ================= QUIZ =================
+# ================= QUIZ GENERATION =================
 
 async def generate_quiz_questions(title: str, content: str, num: int):
     try:
-        summary_prompt = f"Summarize this crypto article in 200 words:\n\n{content[:4000]}"
-        summary = groq_complete(summary_prompt)
-
+        summary = groq_complete(f"Summarize this crypto article in 200 words:\n\n{content[:4000]}")
         quiz_prompt = f"""
 Generate {num} multiple choice questions about this crypto topic.
-
-Return JSON only, no markdown, no backticks, no explanation outside the JSON:
+Return JSON only, no markdown, no backticks:
 [
  {{
   "question":"...",
@@ -199,7 +212,6 @@ Return JSON only, no markdown, no backticks, no explanation outside the JSON:
   "explanation":"..."
  }}
 ]
-
 Topic: {title}
 Context: {summary}
 """
@@ -207,24 +219,122 @@ Context: {summary}
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"^```\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-
         match = re.search(r'\[[\s\S]*\]', text)
         if not match:
-            raise ValueError("No JSON array found in response")
-
+            raise ValueError("No JSON array found")
         questions = json.loads(match.group())
         return questions[:num]
-
     except Exception as e:
-        logger.error(f"Quiz generation error: {str(e)}")
+        logger.error(f"Quiz generation error: {e}")
         return [
             {
                 "question": f"What is {title}?",
                 "options": ["A blockchain concept", "A type of food", "A car brand", "A video game"],
                 "correct": 0,
-                "explanation": f"{title} is a concept in the crypto and blockchain space."
+                "explanation": f"{title} is a concept in the crypto space."
             }
         ]
+
+# ================= GAME LOOP =================
+
+async def run_question(code: str, q: dict, index: int, total: int):
+    duration = 20
+    state = manager.game_state[code]
+
+    # Send question (hide correct answer from clients)
+    await manager.broadcast(code, {
+        "type": "question",
+        "index": index,
+        "total": total,
+        "question": q["question"],
+        "options": q["options"],
+        "duration": duration,
+    })
+
+    state["current_question"] = index
+    state["answers"] = {}
+    state["answered_count"] = 0
+
+    # Timer loop
+    for t in range(duration, -1, -1):
+        await manager.broadcast(code, {"type": "timer", "seconds": t})
+        await asyncio.sleep(1)
+        # Check if all players answered
+        players_count = len([p for p in state["players"] if not p["player_id"].startswith("host_")])
+        if state["answered_count"] >= players_count and players_count > 0:
+            break
+
+    # Calculate scores
+    correct_idx = q["correct"]
+    scores = []
+    for player in state["players"]:
+        pid = player["player_id"]
+        answer_data = state["answers"].get(pid)
+        is_correct = answer_data and answer_data["option"] == correct_idx
+        delta = 0
+        if is_correct:
+            time_ms = answer_data.get("time_ms", duration * 1000)
+            delta = max(100, 1000 - int(time_ms / 100))
+            player["score"] = player.get("score", 0) + delta
+        scores.append({
+            "player_id": pid,
+            "nickname": player["nickname"],
+            "score": player.get("score", 0),
+            "delta": delta,
+            "is_correct": is_correct,
+            "answered": answer_data is not None,
+        })
+
+    scores.sort(key=lambda x: x["score"], reverse=True)
+
+    await manager.broadcast(code, {
+        "type": "answer_result",
+        "correct": correct_idx,
+        "explanation": q.get("explanation", ""),
+        "scores": scores,
+        "question_index": index,
+    })
+
+    # Update MongoDB scores
+    await db.sessions.update_one(
+        {"code": code},
+        {"$set": {"players": state["players"]}}
+    )
+
+async def run_game(code: str):
+    state = manager.game_state[code]
+    questions = state["questions"]
+    total = len(questions)
+
+    await manager.broadcast(code, {
+        "type": "game_starting",
+        "total_questions": total,
+    })
+    await asyncio.sleep(3)
+
+    for i, q in enumerate(questions):
+        await run_question(code, q, i, total)
+        if i < total - 1:
+            await asyncio.sleep(5)  # pause between questions
+
+    # Final standings
+    players = state["players"]
+    standings = sorted(
+        [{"player_id": p["player_id"], "nickname": p["nickname"], "score": p.get("score", 0)} for p in players],
+        key=lambda x: x["score"], reverse=True
+    )
+    for i, s in enumerate(standings):
+        s["rank"] = i + 1
+
+    await manager.broadcast(code, {
+        "type": "game_over",
+        "final_standings": standings,
+    })
+
+    await db.sessions.update_one(
+        {"code": code},
+        {"$set": {"status": "finished", "final_standings": standings}}
+    )
 
 # ================= ROUTES =================
 
@@ -244,6 +354,15 @@ async def search_academy(q: str = Query(...)):
 async def get_article(req: ArticleFetchRequest):
     return await fetch_article_content(req.url)
 
+@app.get("/api/session/{code}")
+async def get_session(code: str):
+    session = await db.sessions.find_one({"code": code.upper()})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.pop("_id", None)
+    session["total_questions"] = len(session.get("questions", []))
+    return session
+
 @app.post("/api/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
     try:
@@ -254,19 +373,15 @@ async def generate_quiz(req: GenerateQuizRequest):
         else:
             title = req.article_title or "Crypto Quiz"
             content = req.article_content
-
         questions = await generate_quiz_questions(title, content, req.num_questions)
-
         doc = {
             "quiz_id": f"quiz_{secrets.token_hex(8)}",
             "article_title": title,
             "questions": questions,
         }
-
         await db.quizzes.insert_one(doc)
         doc.pop("_id", None)
         return doc
-
     except Exception as e:
         logger.error(f"Quiz endpoint error: {str(e)}")
         return {"error": str(e)}
@@ -283,7 +398,6 @@ async def create_session(req: SessionCreateRequest):
             content = req.article_content
 
         questions = await generate_quiz_questions(title, content, req.num_questions)
-
         code = secrets.token_hex(4).upper()
 
         session_doc = {
@@ -298,9 +412,7 @@ async def create_session(req: SessionCreateRequest):
 
         await db.sessions.insert_one(session_doc)
         session_doc.pop("_id", None)
-
         return session_doc
-
     except Exception as e:
         logger.error(f"Session create error: {str(e)}")
         return {"error": str(e)}
@@ -315,10 +427,8 @@ async def join_session(req: SessionJoinRequest):
             raise HTTPException(status_code=400, detail="Code and nickname are required")
 
         session = await db.sessions.find_one({"code": code})
-
         if not session:
             raise HTTPException(status_code=404, detail="Game not found. Check your code and try again.")
-
         if session.get("status") == "finished":
             raise HTTPException(status_code=400, detail="This game has already ended.")
 
@@ -330,20 +440,95 @@ async def join_session(req: SessionJoinRequest):
             "joined_at": str(datetime.datetime.utcnow()),
         }
 
-        await db.sessions.update_one(
-            {"code": code},
-            {"$push": {"players": player}}
-        )
+        await db.sessions.update_one({"code": code}, {"$push": {"players": player}})
+
+        # Also update in-memory game state if room exists
+        if code in manager.game_state:
+            manager.game_state[code]["players"].append(player)
 
         session.pop("_id", None)
-
-        return {
-            "player_id": player_id,
-            "session": session
-        }
+        return {"player_id": player_id, "session": session}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Join session error: {str(e)}")
         raise HTTPException(status_code=500, detail="Server error while joining game")
+
+# ================= WEBSOCKET =================
+
+@app.websocket("/api/ws/{code}/{player_id}")
+async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
+    code = code.upper()
+    await manager.connect(code, player_id, ws)
+    logger.info(f"WS connected: {player_id} -> room {code}")
+
+    # Load session into memory if not already there
+    if code not in manager.game_state:
+        session = await db.sessions.find_one({"code": code})
+        if session:
+            manager.game_state[code] = {
+                "questions": session.get("questions", []),
+                "players": session.get("players", []),
+                "current_question": -1,
+                "answers": {},
+                "answered_count": 0,
+                "started": False,
+            }
+
+    try:
+        # Broadcast updated player list on connect
+        session = await db.sessions.find_one({"code": code})
+        if session:
+            players = session.get("players", [])
+            await manager.broadcast(code, {
+                "type": "player_joined",
+                "players": players,
+            })
+
+        while True:
+            data = await ws.receive_json()
+            msg_type = data.get("type")
+
+            # ── HOST: start game ──
+            if msg_type == "start_game" and player_id.startswith("host_"):
+                state = manager.game_state.get(code)
+                if state and not state.get("started"):
+                    state["started"] = True
+                    # Sync latest players from DB
+                    session = await db.sessions.find_one({"code": code})
+                    if session:
+                        state["players"] = session.get("players", [])
+                    await db.sessions.update_one({"code": code}, {"$set": {"status": "playing"}})
+                    asyncio.create_task(run_game(code))
+
+            # ── PLAYER: submit answer ──
+            elif msg_type == "answer":
+                state = manager.game_state.get(code)
+                if state and player_id not in state["answers"]:
+                    state["answers"][player_id] = {
+                        "option": data.get("option"),
+                        "time_ms": data.get("time_ms", 0),
+                    }
+                    state["answered_count"] += 1
+                    await manager.broadcast(code, {
+                        "type": "player_answered",
+                        "answered_count": state["answered_count"],
+                    })
+
+            # ── HOST: next question ──
+            elif msg_type == "next_question" and player_id.startswith("host_"):
+                pass  # handled automatically by run_game loop
+
+    except WebSocketDisconnect:
+        manager.disconnect(code, player_id)
+        logger.info(f"WS disconnected: {player_id} from {code}")
+        session = await db.sessions.find_one({"code": code})
+        if session:
+            await manager.broadcast(code, {
+                "type": "player_left",
+                "players": session.get("players", []),
+            })
+    except Exception as e:
+        logger.error(f"WS error: {e}")
+        manager.disconnect(code, player_id)
