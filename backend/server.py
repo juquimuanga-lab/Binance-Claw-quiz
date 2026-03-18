@@ -38,100 +38,6 @@ WEBAPP_URL = "https://binance-claw-quiz-app.onrender.com"
 
 DAILY_QUIZ_LIMIT = 10
 
-# ================= ANALYTICS ROUTES =================
-
-@app.get("/api/analytics/leaderboard")
-async def global_leaderboard():
-    try:
-        # Aggregate top players across all finished sessions
-        pipeline = [
-            {"$match": {"status": "finished"}},
-            {"$unwind": "$players"},
-            {"$match": {"players.player_id": {"$not": re.compile("^host_")}}},
-            {"$group": {
-                "_id": "$players.nickname",
-                "total_score": {"$sum": "$players.score"},
-                "games_played": {"$sum": 1},
-                "best_score": {"$max": "$players.score"},
-            }},
-            {"$sort": {"total_score": -1}},
-            {"$limit": 5},
-            {"$project": {
-                "_id": 0,
-                "nickname": "$_id",
-                "total_score": 1,
-                "games_played": 1,
-                "best_score": 1,
-            }}
-        ]
-        top_players = await db.sessions.aggregate(pipeline).to_list(5)
-
-        # Overall stats
-        total_sessions = await db.sessions.count_documents({"status": "finished"})
-        total_active = await db.sessions.count_documents({"status": "playing"})
-
-        # Total unique players
-        player_pipeline = [
-            {"$match": {"status": "finished"}},
-            {"$unwind": "$players"},
-            {"$match": {"players.player_id": {"$not": re.compile("^host_")}}},
-            {"$count": "total"}
-        ]
-        player_result = await db.sessions.aggregate(player_pipeline).to_list(1)
-        total_players = player_result[0]["total"] if player_result else 0
-
-        return {
-            "top_players": top_players,
-            "stats": {
-                "total_games": total_sessions,
-                "active_games": total_active,
-                "total_players": total_players,
-            }
-        }
-    except Exception as e:
-        logger.error(f"Leaderboard error: {e}")
-        return {"top_players": [], "stats": {"total_games": 0, "active_games": 0, "total_players": 0}}
-
-
-@app.get("/api/analytics/trending")
-async def trending_topics():
-    try:
-        # Top topics by number of sessions created in last 7 days
-        seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-
-        pipeline = [
-            {"$match": {"created_date": {"$gte": seven_days_ago}}},
-            {"$group": {
-                "_id": "$article_title",
-                "count": {"$sum": 1},
-                "article_url": {"$first": "$article_url"},
-            }},
-            {"$sort": {"count": -1}},
-            {"$limit": 5},
-            {"$project": {
-                "_id": 0,
-                "title": "$_id",
-                "count": 1,
-                "article_url": 1,
-            }}
-        ]
-        trending = await db.sessions.aggregate(pipeline).to_list(5)
-
-        # Fallback if not enough data yet
-        if not trending:
-            trending = [
-                {"title": "Bitcoin", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-bitcoin"},
-                {"title": "Ethereum", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-ethereum"},
-                {"title": "DeFi", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-defi"},
-                {"title": "NFTs", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-are-nfts"},
-                {"title": "Web3", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-web3"},
-            ]
-
-        return {"trending": trending}
-    except Exception as e:
-        logger.error(f"Trending error: {e}")
-        return {"trending": []}
-        
 # ================= TELEGRAM BOT =================
 
 tg_bot = None
@@ -674,7 +580,6 @@ Context: {summary}
 
         questions = json.loads(match.group())
 
-        # Deduplicate by question text
         seen_questions = set()
         unique_questions = []
         for q in questions:
@@ -683,7 +588,6 @@ Context: {summary}
                 seen_questions.add(q_text)
                 unique_questions.append(q)
 
-        # Shuffle answer options so correct answer isn't always first
         for q in unique_questions:
             options = q.get("options", [])
             correct_answer = options[q.get("correct", 0)] if options else None
@@ -920,6 +824,7 @@ async def create_session(req: SessionCreateRequest):
             "status": "waiting",
             "players": [],
             "created_at": str(datetime.datetime.utcnow()),
+            "created_date": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
         }
 
         await db.sessions.insert_one(session_doc)
@@ -965,6 +870,95 @@ async def join_session(req: SessionJoinRequest):
     except Exception as e:
         logger.error(f"Join session error: {e}")
         raise HTTPException(status_code=500, detail="Server error while joining game")
+
+# ================= ANALYTICS ROUTES =================
+
+@app.get("/api/analytics/leaderboard")
+async def global_leaderboard():
+    try:
+        pipeline = [
+            {"$match": {"status": "finished"}},
+            {"$unwind": "$players"},
+            {"$match": {"players.player_id": {"$not": re.compile("^host_")}}},
+            {"$group": {
+                "_id": "$players.nickname",
+                "total_score": {"$sum": "$players.score"},
+                "games_played": {"$sum": 1},
+                "best_score": {"$max": "$players.score"},
+            }},
+            {"$sort": {"total_score": -1}},
+            {"$limit": 5},
+            {"$project": {
+                "_id": 0,
+                "nickname": "$_id",
+                "total_score": 1,
+                "games_played": 1,
+                "best_score": 1,
+            }}
+        ]
+        top_players = await db.sessions.aggregate(pipeline).to_list(5)
+
+        total_sessions = await db.sessions.count_documents({"status": "finished"})
+        total_active = await db.sessions.count_documents({"status": "playing"})
+
+        player_pipeline = [
+            {"$match": {"status": "finished"}},
+            {"$unwind": "$players"},
+            {"$match": {"players.player_id": {"$not": re.compile("^host_")}}},
+            {"$count": "total"}
+        ]
+        player_result = await db.sessions.aggregate(player_pipeline).to_list(1)
+        total_players = player_result[0]["total"] if player_result else 0
+
+        return {
+            "top_players": top_players,
+            "stats": {
+                "total_games": total_sessions,
+                "active_games": total_active,
+                "total_players": total_players,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Leaderboard error: {e}")
+        return {"top_players": [], "stats": {"total_games": 0, "active_games": 0, "total_players": 0}}
+
+
+@app.get("/api/analytics/trending")
+async def trending_topics():
+    try:
+        seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+
+        pipeline = [
+            {"$match": {"created_date": {"$gte": seven_days_ago}}},
+            {"$group": {
+                "_id": "$article_title",
+                "count": {"$sum": 1},
+                "article_url": {"$first": "$article_url"},
+            }},
+            {"$sort": {"count": -1}},
+            {"$limit": 5},
+            {"$project": {
+                "_id": 0,
+                "title": "$_id",
+                "count": 1,
+                "article_url": 1,
+            }}
+        ]
+        trending = await db.sessions.aggregate(pipeline).to_list(5)
+
+        if not trending:
+            trending = [
+                {"title": "Bitcoin", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-bitcoin"},
+                {"title": "Ethereum", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-ethereum"},
+                {"title": "DeFi", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-defi"},
+                {"title": "NFTs", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-are-nfts"},
+                {"title": "Web3", "count": 0, "article_url": "https://academy.binance.com/en/articles/what-is-web3"},
+            ]
+
+        return {"trending": trending}
+    except Exception as e:
+        logger.error(f"Trending error: {e}")
+        return {"trending": []}
 
 # ================= AGENT ROUTES =================
 
