@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocketDisconnect, Header
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -29,6 +29,8 @@ db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+DAILY_QUIZ_LIMIT = 10  # max quizzes per agent per day
 
 # ================= KEEP ALIVE =================
 
@@ -126,6 +128,30 @@ def groq_complete(prompt: str) -> str:
     )
     return chat.choices[0].message.content
 
+# ================= API KEY AUTH =================
+
+async def get_agent(x_api_key: Optional[str] = Header(None)):
+    """Dependency — resolves API key to agent doc or raises 401."""
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    agent = await db.agents.find_one({"api_key": x_api_key, "active": True})
+    if not agent:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+    return agent
+
+async def check_daily_limit(agent: dict):
+    """Raises 429 if agent has hit their daily quiz creation limit."""
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    count = await db.sessions.count_documents({
+        "created_by": str(agent["_id"]),
+        "created_date": today,
+    })
+    if count >= DAILY_QUIZ_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily quiz limit of {DAILY_QUIZ_LIMIT} reached. Resets at midnight UTC."
+        )
+
 # ================= MODELS =================
 
 class ArticleFetchRequest(BaseModel):
@@ -144,6 +170,19 @@ class SessionCreateRequest(BaseModel):
     num_questions: int = 10
 
 class SessionJoinRequest(BaseModel):
+    code: str
+    nickname: str
+
+class AgentRegisterRequest(BaseModel):
+    agent_name: str
+    email: str
+
+class AgentAnswerRequest(BaseModel):
+    code: str
+    player_id: str
+    option: int
+
+class AgentJoinRequest(BaseModel):
     code: str
     nickname: str
 
@@ -375,7 +414,7 @@ async def run_game(code: str):
     except Exception as e:
         logger.error(f"run_game error for {code}: {e}")
 
-# ================= ROUTES =================
+# ================= STANDARD ROUTES =================
 
 @app.get("/")
 async def root():
@@ -492,6 +531,186 @@ async def join_session(req: SessionJoinRequest):
     except Exception as e:
         logger.error(f"Join session error: {e}")
         raise HTTPException(status_code=500, detail="Server error while joining game")
+
+# ================= AGENT ROUTES =================
+
+@app.post("/api/agents/register")
+async def register_agent(req: AgentRegisterRequest):
+    """Self-serve registration — returns an API key instantly."""
+    existing = await db.agents.find_one({"email": req.email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    api_key = f"claw_{secrets.token_hex(24)}"
+    agent_doc = {
+        "agent_name": req.agent_name,
+        "email": req.email,
+        "api_key": api_key,
+        "active": True,
+        "daily_limit": DAILY_QUIZ_LIMIT,
+        "created_at": str(datetime.datetime.utcnow()),
+    }
+
+    await db.agents.insert_one(agent_doc)
+    agent_doc.pop("_id", None)
+
+    return {
+        "message": "Agent registered successfully",
+        "agent_name": req.agent_name,
+        "api_key": api_key,
+        "daily_quiz_limit": DAILY_QUIZ_LIMIT,
+        "note": "Store your API key safely — it will not be shown again."
+    }
+
+@app.get("/api/agents/me")
+async def get_agent_profile(x_api_key: Optional[str] = Header(None)):
+    """Returns agent profile, usage stats and quiz history."""
+    agent = await get_agent(x_api_key)
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+    quizzes_today = await db.sessions.count_documents({
+        "created_by": str(agent["_id"]),
+        "created_date": today,
+    })
+
+    history = await db.sessions.find(
+        {"created_by": str(agent["_id"])},
+        {"_id": 0, "questions": 0}
+    ).sort("created_at", -1).limit(20).to_list(20)
+
+    return {
+        "agent_name": agent["agent_name"],
+        "email": agent["email"],
+        "active": agent["active"],
+        "daily_limit": agent.get("daily_limit", DAILY_QUIZ_LIMIT),
+        "quizzes_today": quizzes_today,
+        "quizzes_remaining_today": max(0, DAILY_QUIZ_LIMIT - quizzes_today),
+        "quiz_history": history,
+    }
+
+@app.post("/api/agents/session/create")
+async def agent_create_session(
+    req: SessionCreateRequest,
+    x_api_key: Optional[str] = Header(None)
+):
+    """Authenticated session creation for agents."""
+    agent = await get_agent(x_api_key)
+    await check_daily_limit(agent)
+
+    try:
+        if not req.article_content:
+            article = await fetch_article_content(req.article_url)
+            title = article["title"]
+            content = article["content"]
+        else:
+            title = req.article_title or "Crypto Quiz"
+            content = req.article_content
+
+        questions = await generate_quiz_questions(title, content, req.num_questions)
+        code = secrets.token_hex(4).upper()
+        today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+        session_doc = {
+            "code": code,
+            "article_title": title,
+            "article_url": req.article_url,
+            "questions": questions,
+            "status": "waiting",
+            "players": [],
+            "created_by": str(agent["_id"]),
+            "created_by_name": agent["agent_name"],
+            "created_date": today,
+            "created_at": str(datetime.datetime.utcnow()),
+        }
+
+        await db.sessions.insert_one(session_doc)
+        session_doc.pop("_id", None)
+
+        return {
+            **session_doc,
+            "join_url": f"https://binance-claw-quiz-app.onrender.com/join?code={code}",
+            "websocket_url": f"wss://binance-claw-quiz-api.onrender.com/api/ws/{code}/{{your_player_id}}",
+        }
+
+    except Exception as e:
+        logger.error(f"Agent session create error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/agents/session/join")
+async def agent_join_session(
+    req: AgentJoinRequest,
+    x_api_key: Optional[str] = Header(None)
+):
+    """Agents join a session — returns player_id for WebSocket auth."""
+    agent = await get_agent(x_api_key)
+
+    code = req.code.strip().upper()
+    session = await db.sessions.find_one({"code": code})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.get("status") == "finished":
+        raise HTTPException(status_code=400, detail="Session already finished")
+
+    player_id = f"agent_{secrets.token_hex(6)}"
+    player = {
+        "player_id": player_id,
+        "nickname": req.nickname,
+        "score": 0,
+        "is_agent": True,
+        "agent_name": agent["agent_name"],
+        "joined_at": str(datetime.datetime.utcnow()),
+    }
+
+    await db.sessions.update_one({"code": code}, {"$push": {"players": player}})
+
+    if code in manager.game_state:
+        manager.game_state[code]["players"].append(player)
+
+    session.pop("_id", None)
+
+    return {
+        "player_id": player_id,
+        "code": code,
+        "session": session,
+        "websocket_url": f"wss://binance-claw-quiz-api.onrender.com/api/ws/{code}/{player_id}",
+        "note": "Connect to websocket_url to receive questions in real time. Send {type: answer, option: 0-3} to answer."
+    }
+
+@app.get("/api/agents/session/{code}/status")
+async def agent_session_status(
+    code: str,
+    x_api_key: Optional[str] = Header(None)
+):
+    """Poll session state — useful for agents that can't use WebSockets."""
+    await get_agent(x_api_key)
+    session = await db.sessions.find_one({"code": code.upper()})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    state = manager.game_state.get(code.upper(), {})
+    session.pop("_id", None)
+    session.pop("questions", None)
+
+    current_q = None
+    if state.get("current_question", -1) >= 0:
+        questions = state.get("questions", [])
+        qi = state["current_question"]
+        if qi < len(questions):
+            q = questions[qi]
+            current_q = {
+                "index": qi,
+                "total": len(questions),
+                "question": q["question"],
+                "options": q["options"],
+            }
+
+    return {
+        "code": code.upper(),
+        "status": session.get("status"),
+        "players": session.get("players", []),
+        "current_question": current_q,
+        "waiting_for_next": state.get("waiting_for_next", False),
+    }
 
 # ================= WEBSOCKET =================
 
