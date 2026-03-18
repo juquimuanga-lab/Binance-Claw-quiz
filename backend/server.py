@@ -54,7 +54,7 @@ if TELEGRAM_BOT_TOKEN:
         tg_bot.send_message(
             message.chat.id,
             f"👋 Welcome {name}!\n\n"
-            f"🦞 *Binance Claw Quiz*\n\n"
+            f"🦅 *Binance Claw Quiz*\n\n"
             f"Test your crypto knowledge with AI-generated quizzes from Binance Academy.\n\n"
             f"• 🏆 Compete with friends in real-time\n"
             f"• 🤖 AI-powered questions\n"
@@ -125,7 +125,6 @@ async def keep_alive():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Set Telegram webhook on startup
     if TELEGRAM_BOT_TOKEN:
         try:
             async with httpx.AsyncClient() as client:
@@ -542,6 +541,29 @@ async def generate_quiz(req: GenerateQuizRequest):
         return doc
     except Exception as e:
         logger.error(f"Quiz endpoint error: {e}")
+        return {"error": str(e)}
+
+# ✅ NEW — Solo quiz endpoint
+@app.post("/api/quiz/solo")
+async def solo_quiz(req: GenerateQuizRequest):
+    try:
+        if not req.article_content:
+            article = await fetch_article_content(req.article_url)
+            title = article["title"]
+            content = article["content"]
+        else:
+            title = req.article_title or "Crypto Quiz"
+            content = req.article_content
+
+        questions = await generate_quiz_questions(title, content, req.num_questions)
+
+        return {
+            "article_title": title,
+            "questions": questions,
+        }
+
+    except Exception as e:
+        logger.error(f"Solo quiz error: {e}")
         return {"error": str(e)}
 
 @app.post("/api/session/create")
