@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
 import { fireCelebration } from '@/utils/celebration';
 
@@ -31,11 +31,15 @@ export default function GamePage() {
   const [answeredCount, setAnsweredCount] = useState(0);
   const [session, setSession] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [wsReady, setWsReady] = useState(false); // ✅ track WS ready state
+  const [wsReady, setWsReady] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
   const ws = useRef(null);
   const answerTime = useRef(null);
-  const pingInterval = useRef(null); // ✅ keep-alive ping
+  const pingInterval = useRef(null);
+  const reconnectTimeout = useRef(null);
+  const shouldReconnect = useRef(true); // ✅ controls whether to reconnect
+  const pendingMessages = useRef([]); // ✅ queue messages while reconnecting
 
   useEffect(() => {
     fetch(`${API}/api/session/${code}`)
@@ -48,25 +52,36 @@ export default function GamePage() {
       .catch(() => {});
   }, [code]);
 
-  useEffect(() => {
+  const connectWebSocket = useCallback(() => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) return;
+
     const socket = new WebSocket(`${WS_URL}/api/ws/${code}/${playerId}`);
     ws.current = socket;
 
-    // ✅ Mark ready when open + start keep-alive ping
     socket.onopen = () => {
       setWsReady(true);
+      setReconnecting(false);
+      console.log('WS connected');
+
+      // ✅ Flush any queued messages
+      while (pendingMessages.current.length > 0) {
+        const msg = pendingMessages.current.shift();
+        socket.send(JSON.stringify(msg));
+      }
+
+      // Keep-alive ping every 20s
+      clearInterval(pingInterval.current);
       pingInterval.current = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'ping' }));
         }
-      }, 20000); // ping every 20s to prevent idle disconnect
+      }, 20000);
     };
 
     socket.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       switch (msg.type) {
-        case 'pong':
-          break; // keep-alive response, ignore
+        case 'pong': break;
         case 'player_joined':
           setPlayers(msg.players || []);
           break;
@@ -101,6 +116,7 @@ export default function GamePage() {
         case 'game_over':
           setStandings(msg.final_standings);
           setState('game_over');
+          shouldReconnect.current = false; // stop reconnecting after game ends
           setTimeout(() => fireCelebration(), 400);
           break;
         default:
@@ -109,38 +125,49 @@ export default function GamePage() {
     };
 
     socket.onclose = () => {
-      setWsReady(false); // ✅ mark not ready on close
+      setWsReady(false);
       clearInterval(pingInterval.current);
+
+      // ✅ Auto-reconnect after 2 seconds
+      if (shouldReconnect.current) {
+        setReconnecting(true);
+        console.log('WS closed, reconnecting in 2s...');
+        reconnectTimeout.current = setTimeout(() => {
+          connectWebSocket();
+        }, 2000);
+      }
     };
 
     socket.onerror = (err) => {
-      console.error('WebSocket error:', err);
-      setWsReady(false);
-    };
-
-    return () => {
-      clearInterval(pingInterval.current);
+      console.error('WS error:', err);
       socket.close();
     };
   }, [code, playerId]);
 
-  // ✅ Safe send — checks readyState before sending
+  useEffect(() => {
+    shouldReconnect.current = true;
+    connectWebSocket();
+    return () => {
+      shouldReconnect.current = false;
+      clearInterval(pingInterval.current);
+      clearTimeout(reconnectTimeout.current);
+      ws.current?.close();
+    };
+  }, [connectWebSocket]);
+
+  // ✅ Safe send — queues message if socket not ready
   const safeSend = (msg) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify(msg));
-      return true;
-    }
-    console.warn('WebSocket not ready, message dropped:', msg);
-    return false;
-  };
-
-  const startGame = () => {
-    const sent = safeSend({ type: 'start_game' });
-    if (!sent) {
-      alert('Connection not ready. Please wait a moment and try again.');
+    } else {
+      console.warn('WS not ready, queuing message:', msg);
+      pendingMessages.current.push(msg);
+      // Try reconnecting immediately
+      connectWebSocket();
     }
   };
 
+  const startGame = () => safeSend({ type: 'start_game' });
   const nextQuestion = () => safeSend({ type: 'next_question' });
 
   const submitAnswer = (opt) => {
@@ -167,15 +194,16 @@ export default function GamePage() {
             {isHost ? 'Game Lobby' : 'Waiting for Host...'}
           </h2>
 
-          {/* ✅ Show WS connection status */}
           <div className="flex items-center justify-center gap-2 mb-4">
-            <div className={`w-2 h-2 rounded-full ${wsReady ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-xs text-gray-500">{wsReady ? 'Connected' : 'Connecting...'}</span>
+            <div className={`w-2 h-2 rounded-full transition-colors ${wsReady ? 'bg-green-500' : reconnecting ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+            <span className="text-xs text-gray-500">
+              {wsReady ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
+            </span>
           </div>
 
           <div
             data-testid="join-code-display"
-            className="rounded-2xl p-6 mb-6 pulse-glow cursor-pointer"
+            className="rounded-2xl p-6 mb-6 cursor-pointer"
             style={{ background: '#121212', border: '2px solid #F3BA2F' }}
             onClick={copyCode}
           >
@@ -196,12 +224,7 @@ export default function GamePage() {
             </div>
             <div className="flex flex-wrap gap-2">
               {players.map((p) => (
-                <span
-                  key={p.player_id}
-                  data-testid={`player-${p.player_id}`}
-                  className="px-3 py-1 rounded-full text-sm"
-                  style={{ background: '#1E1E1E', color: '#00F0FF' }}
-                >
+                <span key={p.player_id} className="px-3 py-1 rounded-full text-sm" style={{ background: '#1E1E1E', color: '#00F0FF' }}>
                   {p.nickname}
                 </span>
               ))}
@@ -213,7 +236,7 @@ export default function GamePage() {
             <button
               data-testid="start-game-btn"
               onClick={startGame}
-              disabled={players.length === 0 || !wsReady} // ✅ disabled until WS ready
+              disabled={players.length === 0 || !wsReady}
               className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-30"
               style={{ background: '#F3BA2F', color: '#000' }}
             >
@@ -250,9 +273,7 @@ export default function GamePage() {
               {timer}
             </span>
           </div>
-          {isHost && (
-            <span className="text-gray-600 text-xs">{answeredCount}/{players.length} answered</span>
-          )}
+          {isHost && <span className="text-gray-600 text-xs">{answeredCount}/{players.length} answered</span>}
         </div>
 
         <div className="w-full h-1.5 rounded-full mb-6" style={{ background: '#1E1E1E' }}>
@@ -264,13 +285,8 @@ export default function GamePage() {
           />
         </div>
 
-        <motion.div
-          key={qIndex}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl p-6 mb-6"
-          style={{ background: '#121212', border: '1px solid #27272A' }}
-        >
+        <motion.div key={qIndex} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+          className="rounded-2xl p-6 mb-6" style={{ background: '#121212', border: '1px solid #27272A' }}>
           <h3 data-testid="question-text" className="text-xl md:text-2xl font-semibold text-center leading-tight">
             {question?.question}
           </h3>
@@ -281,11 +297,8 @@ export default function GamePage() {
             const Icon = ICONS[i];
             const isSelected = selected === i;
             return (
-              <motion.button
-                key={i}
-                data-testid={`option-${i}`}
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
+              <motion.button key={i} data-testid={`option-${i}`}
+                initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: i * 0.08 }}
                 onClick={() => submitAnswer(i)}
                 disabled={selected !== null || isHost}
@@ -326,9 +339,7 @@ export default function GamePage() {
           <p className="text-lg font-bold" style={{ color: COLORS[correctIdx] }}>
             {question?.options?.[correctIdx]}
           </p>
-          {results.explanation && (
-            <p className="text-gray-500 text-xs mt-2">{results.explanation}</p>
-          )}
+          {results.explanation && <p className="text-gray-500 text-xs mt-2">{results.explanation}</p>}
         </div>
 
         <div className="rounded-xl p-4 mb-6" style={{ background: '#121212', border: '1px solid #27272A' }}>
@@ -338,12 +349,9 @@ export default function GamePage() {
           </div>
           <div className="space-y-2">
             {results.scores?.map((s, i) => (
-              <div
-                key={s.player_id}
-                data-testid={`score-${s.player_id}`}
+              <div key={s.player_id} data-testid={`score-${s.player_id}`}
                 className="flex items-center justify-between px-3 py-2 rounded-lg"
-                style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}
-              >
+                style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}>
                 <div className="flex items-center gap-2">
                   {i === 0 && <Crown size={14} style={{ color: '#F3BA2F' }} />}
                   <span className="text-gray-400 text-xs w-5">#{i + 1}</span>
@@ -359,19 +367,19 @@ export default function GamePage() {
           </div>
         </div>
 
+        {/* ✅ Show reconnecting indicator on results screen too */}
         {isHost && (
           <button
             data-testid="next-question-btn"
             onClick={nextQuestion}
-            className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all"
+            disabled={!wsReady}
+            className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-50"
             style={{ background: '#F3BA2F', color: '#000' }}
           >
-            Next Question <ChevronRight size={20} />
+            {wsReady ? <><ChevronRight size={20} /> Next Question</> : 'Reconnecting...'}
           </button>
         )}
-        {!isHost && (
-          <p className="text-center text-gray-500 text-sm mt-2">Waiting for host...</p>
-        )}
+        {!isHost && <p className="text-center text-gray-500 text-sm mt-2">Waiting for host...</p>}
       </div>
     );
   }
@@ -384,14 +392,9 @@ export default function GamePage() {
       <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10 max-w-lg mx-auto">
         <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="text-center w-full">
           <img src="/logo.png" alt="Binance Claw Quiz" className="w-20 h-20 mx-auto mb-2 object-contain" />
-          <Trophy size={36} style={{ color: '#F3BA2F' }} className="mx-auto mb-3 float-anim" />
+          <Trophy size={36} style={{ color: '#F3BA2F' }} className="mx-auto mb-3" />
           <h2 data-testid="game-over-title" className="text-3xl font-bold mb-1" style={{ color: '#F3BA2F' }}>Game Over!</h2>
-
-          {winner && (
-            <p className="text-lg mb-6">
-              <span style={{ color: '#00F0FF' }}>{winner.nickname}</span> wins!
-            </p>
-          )}
+          {winner && <p className="text-lg mb-6"><span style={{ color: '#00F0FF' }}>{winner.nickname}</span> wins!</p>}
 
           {myRank && !isHost && (
             <div className="rounded-xl p-4 mb-6 inline-block" style={{ background: '#121212', border: '1px solid #F3BA2F50' }}>
@@ -405,12 +408,9 @@ export default function GamePage() {
             <p className="text-sm font-semibold mb-3" style={{ color: '#F3BA2F' }}>Final Standings</p>
             <div className="space-y-2">
               {standings.map((s, i) => (
-                <div
-                  key={s.player_id}
-                  data-testid={`final-rank-${i}`}
+                <div key={s.player_id} data-testid={`final-rank-${i}`}
                   className="flex items-center justify-between px-3 py-2 rounded-lg"
-                  style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}
-                >
+                  style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}>
                   <div className="flex items-center gap-2">
                     {i === 0 && <Crown size={14} style={{ color: '#F3BA2F' }} />}
                     {i === 1 && <span className="text-gray-400 text-xs">2nd</span>}
@@ -424,12 +424,9 @@ export default function GamePage() {
             </div>
           </div>
 
-          <button
-            data-testid="go-home-btn"
-            onClick={() => navigate('/')}
+          <button data-testid="go-home-btn" onClick={() => navigate('/')}
             className="h-12 px-8 rounded-xl font-semibold flex items-center justify-center gap-2 mx-auto active:scale-95 transition-all"
-            style={{ background: '#1E1E1E', border: '1px solid #27272A', color: '#F2F3F5' }}
-          >
+            style={{ background: '#1E1E1E', border: '1px solid #27272A', color: '#F2F3F5' }}>
             <Home size={18} /> Play Again
           </button>
         </motion.div>
@@ -437,12 +434,11 @@ export default function GamePage() {
     );
   }
 
-  // fallback
   return (
     <div className="min-h-screen flex items-center justify-center relative z-10">
       <div className="text-center">
         <div className="w-8 h-8 border-2 border-[#F3BA2F] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-gray-400">Connecting...</p>
+        <p className="text-gray-400">{reconnecting ? 'Reconnecting...' : 'Connecting...'}</p>
       </div>
     </div>
   );
