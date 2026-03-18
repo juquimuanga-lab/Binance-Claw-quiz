@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from typing import Dict, Optional
 from bs4 import BeautifulSoup
 from groq import Groq
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 # ================= INIT =================
 
@@ -30,7 +32,80 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+WEBAPP_URL = "https://binance-claw-quiz-app.onrender.com"
+
 DAILY_QUIZ_LIMIT = 10
+
+# ================= TELEGRAM BOT =================
+
+tg_bot = None
+if TELEGRAM_BOT_TOKEN:
+    tg_bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False)
+
+    @tg_bot.message_handler(commands=['start'])
+    def tg_start(message):
+        name = message.from_user.first_name or "Player"
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton(
+            text="🎮 Play Now",
+            web_app=WebAppInfo(url=WEBAPP_URL)
+        ))
+        tg_bot.send_message(
+            message.chat.id,
+            f"👋 Welcome {name}!\n\n"
+            f"🦅 *Binance Claw Quiz*\n\n"
+            f"Test your crypto knowledge with AI-generated quizzes from Binance Academy.\n\n"
+            f"• 🏆 Compete with friends in real-time\n"
+            f"• 🤖 AI-powered questions\n"
+            f"• ⚡ Score points based on speed\n\n"
+            f"Press *Play Now* to start! 👇",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+    @tg_bot.message_handler(commands=['host'])
+    def tg_host(message):
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton(
+            text="🎯 Create a Quiz",
+            web_app=WebAppInfo(url=f"{WEBAPP_URL}/host")
+        ))
+        tg_bot.send_message(
+            message.chat.id,
+            "🎯 *Host a Quiz*\n\nSearch Binance Academy, pick a topic, and challenge your friends!",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+    @tg_bot.message_handler(commands=['join'])
+    def tg_join(message):
+        parts = message.text.split()
+        code = parts[1].upper() if len(parts) > 1 else ""
+        url = f"{WEBAPP_URL}/join?code={code}" if code else f"{WEBAPP_URL}/join"
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton(
+            text="🚀 Join Game",
+            web_app=WebAppInfo(url=url)
+        ))
+        tg_bot.send_message(
+            message.chat.id,
+            f"🚀 *Join a Game*\n\nPress Join Game below!",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+    @tg_bot.message_handler(commands=['help'])
+    def tg_help(message):
+        tg_bot.send_message(
+            message.chat.id,
+            "🦅 *Binance Claw Quiz — Commands*\n\n"
+            "/start — Launch the app\n"
+            "/host — Create a new quiz session\n"
+            "/join — Join a game (e.g. /join ABC123)\n"
+            "/help — Show this message",
+            parse_mode="Markdown"
+        )
 
 # ================= KEEP ALIVE =================
 
@@ -50,6 +125,18 @@ async def keep_alive():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Set Telegram webhook on startup
+    if TELEGRAM_BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient() as client:
+                webhook_url = f"https://binance-claw-quiz-api.onrender.com/webhook/{TELEGRAM_BOT_TOKEN}"
+                await client.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+                    json={"url": webhook_url}
+                )
+            logger.info("Telegram webhook set successfully")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
     asyncio.create_task(keep_alive())
     yield
 
@@ -84,6 +171,12 @@ class GameManager:
     def __init__(self):
         self.rooms: Dict[str, Dict[str, WebSocket]] = {}
         self.game_state: Dict[str, dict] = {}
+
+    async def connect(self, code: str, player_id: str, ws: WebSocket):
+        await ws.accept()
+        if code not in self.rooms:
+            self.rooms[code] = {}
+        self.rooms[code][player_id] = ws
 
     def disconnect(self, code: str, player_id: str):
         if code in self.rooms:
@@ -451,29 +544,6 @@ async def generate_quiz(req: GenerateQuizRequest):
         logger.error(f"Quiz endpoint error: {e}")
         return {"error": str(e)}
 
-# ✅ NEW — solo quiz endpoint
-@app.post("/api/quiz/solo")
-async def solo_quiz(req: GenerateQuizRequest):
-    try:
-        if not req.article_content:
-            article = await fetch_article_content(req.article_url)
-            title = article["title"]
-            content = article["content"]
-        else:
-            title = req.article_title or "Crypto Quiz"
-            content = req.article_content
-
-        questions = await generate_quiz_questions(title, content, req.num_questions)
-
-        return {
-            "quiz_id": f"solo_{secrets.token_hex(8)}",
-            "article_title": title,
-            "questions": questions,
-        }
-    except Exception as e:
-        logger.error(f"Solo quiz error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/session/create")
 async def create_session(req: SessionCreateRequest):
     try:
@@ -679,7 +749,7 @@ async def agent_join_session(
         "code": code,
         "session": session,
         "websocket_url": f"wss://binance-claw-quiz-api.onrender.com/api/ws/{code}/{player_id}",
-        "note": "Connect to websocket_url to receive questions in real time. Send {type: answer, option: 0-3} to answer."
+        "note": "Connect to websocket_url to receive questions in real time."
     }
 
 @app.get("/api/agents/session/{code}/status")
@@ -716,6 +786,23 @@ async def agent_session_status(
         "current_question": current_q,
         "waiting_for_next": state.get("waiting_for_next", False),
     }
+
+# ================= TELEGRAM WEBHOOK =================
+
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request):
+    if token != TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not tg_bot:
+        raise HTTPException(status_code=500, detail="Bot not configured")
+    try:
+        json_data = await request.json()
+        update = telebot.types.Update.de_json(json_data)
+        tg_bot.process_new_updates([update])
+        logger.info(f"Telegram update processed: {update.update_id}")
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+    return {"ok": True}
 
 # ================= WEBSOCKET =================
 
