@@ -140,7 +140,7 @@ async def fetch_article_content(url: str) -> dict:
     except Exception as e:
         logger.error(f"Scrape failed, using AI fallback: {e}")
 
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = f"""
 Write a 400-word educational crypto article about:
 
@@ -160,7 +160,7 @@ Make it clear and informative.
 
 async def generate_quiz_questions(title: str, content: str, num: int):
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         summary_prompt = f"""
 Summarize this crypto article in 200 words:
