@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocket
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from contextlib import asynccontextmanager
 import os
 import logging
 import json
@@ -29,7 +30,28 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-app = FastAPI()
+# ================= KEEP ALIVE =================
+
+async def keep_alive():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.get(
+                    "https://binance-claw-quiz-api.onrender.com/api/health",
+                    timeout=10
+                )
+                logger.info("Keep-alive ping sent")
+        except Exception as e:
+            logger.warning(f"Keep-alive failed: {e}")
+        await asyncio.sleep(14 * 60)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(keep_alive())
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # ================= CORS =================
 
@@ -75,8 +97,7 @@ class GameManager:
         if code not in self.rooms:
             return
         dead = []
-        # ✅ list() snapshot prevents dict-changed-size crash
-        for pid, ws in list(self.rooms[code].items()):
+        for pid, ws in self.rooms[code].items():
             try:
                 await ws.send_json(message)
             except Exception:
@@ -506,61 +527,46 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
                 "players": session.get("players", []),
             })
 
-        # ✅ Server-side keepalive — prevents Render 30s idle timeout
-        async def keepalive():
-            while True:
-                await asyncio.sleep(25)
-                try:
-                    if ws.client_state.value == 1:
-                        await ws.send_json({"type": "pong"})
-                except Exception:
-                    break
+        while True:
+            data = await ws.receive_json()
+            msg_type = data.get("type")
+            logger.info(f"WS message from {player_id}: {msg_type}")
 
-        keepalive_task = asyncio.create_task(keepalive())
+            if msg_type == "start_game" and player_id.startswith("host_"):
+                state = manager.game_state.get(code)
+                if state and not state.get("started"):
+                    state["started"] = True
+                    session = await db.sessions.find_one({"code": code})
+                    if session:
+                        state["players"] = session.get("players", [])
+                    await db.sessions.update_one(
+                        {"code": code},
+                        {"$set": {"status": "playing"}}
+                    )
+                    logger.info(f"Starting game for room {code}")
+                    asyncio.create_task(run_game(code))
 
-        try:
-            while True:
-                data = await ws.receive_json()
-                msg_type = data.get("type")
-                logger.info(f"WS message from {player_id}: {msg_type}")
+            elif msg_type == "answer":
+                state = manager.game_state.get(code)
+                if state and player_id not in state["answers"]:
+                    state["answers"][player_id] = {
+                        "option": data.get("option"),
+                        "time_ms": data.get("time_ms", 0),
+                    }
+                    state["answered_count"] += 1
+                    await manager.broadcast(code, {
+                        "type": "player_answered",
+                        "answered_count": state["answered_count"],
+                    })
 
-                if msg_type == "ping":
-                    await ws.send_json({"type": "pong"})
+            elif msg_type == "next_question" and player_id.startswith("host_"):
+                state = manager.game_state.get(code)
+                if state:
+                    state["waiting_for_next"] = False
+                    logger.info(f"Host triggered next question for room {code}")
 
-                elif msg_type == "start_game" and player_id.startswith("host_"):
-                    state = manager.game_state.get(code)
-                    if state and not state.get("started"):
-                        state["started"] = True
-                        session = await db.sessions.find_one({"code": code})
-                        if session:
-                            state["players"] = session.get("players", [])
-                        await db.sessions.update_one(
-                            {"code": code},
-                            {"$set": {"status": "playing"}}
-                        )
-                        logger.info(f"Starting game for room {code}")
-                        asyncio.create_task(run_game(code))
-
-                elif msg_type == "answer":
-                    state = manager.game_state.get(code)
-                    if state and player_id not in state["answers"]:
-                        state["answers"][player_id] = {
-                            "option": data.get("option"),
-                            "time_ms": data.get("time_ms", 0),
-                        }
-                        state["answered_count"] += 1
-                        await manager.broadcast(code, {
-                            "type": "player_answered",
-                            "answered_count": state["answered_count"],
-                        })
-
-                elif msg_type == "next_question" and player_id.startswith("host_"):
-                    state = manager.game_state.get(code)
-                    if state:
-                        state["waiting_for_next"] = False
-
-        finally:
-            keepalive_task.cancel()
+            elif msg_type == "ping":
+                await ws.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
         manager.disconnect(code, player_id)
