@@ -30,7 +30,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-DAILY_QUIZ_LIMIT = 10  # max quizzes per agent per day
+DAILY_QUIZ_LIMIT = 10
 
 # ================= KEEP ALIVE =================
 
@@ -85,12 +85,6 @@ class GameManager:
         self.rooms: Dict[str, Dict[str, WebSocket]] = {}
         self.game_state: Dict[str, dict] = {}
 
-    async def connect(self, code: str, player_id: str, ws: WebSocket):
-        await ws.accept()
-        if code not in self.rooms:
-            self.rooms[code] = {}
-        self.rooms[code][player_id] = ws
-
     def disconnect(self, code: str, player_id: str):
         if code in self.rooms:
             self.rooms[code].pop(player_id, None)
@@ -131,7 +125,6 @@ def groq_complete(prompt: str) -> str:
 # ================= API KEY AUTH =================
 
 async def get_agent(x_api_key: Optional[str] = Header(None)):
-    """Dependency — resolves API key to agent doc or raises 401."""
     if not x_api_key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header")
     agent = await db.agents.find_one({"api_key": x_api_key, "active": True})
@@ -140,7 +133,6 @@ async def get_agent(x_api_key: Optional[str] = Header(None)):
     return agent
 
 async def check_daily_limit(agent: dict):
-    """Raises 429 if agent has hit their daily quiz creation limit."""
     today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
     count = await db.sessions.count_documents({
         "created_by": str(agent["_id"]),
@@ -176,11 +168,6 @@ class SessionJoinRequest(BaseModel):
 class AgentRegisterRequest(BaseModel):
     agent_name: str
     email: str
-
-class AgentAnswerRequest(BaseModel):
-    code: str
-    player_id: str
-    option: int
 
 class AgentJoinRequest(BaseModel):
     code: str
@@ -464,6 +451,29 @@ async def generate_quiz(req: GenerateQuizRequest):
         logger.error(f"Quiz endpoint error: {e}")
         return {"error": str(e)}
 
+# ✅ NEW — solo quiz endpoint
+@app.post("/api/quiz/solo")
+async def solo_quiz(req: GenerateQuizRequest):
+    try:
+        if not req.article_content:
+            article = await fetch_article_content(req.article_url)
+            title = article["title"]
+            content = article["content"]
+        else:
+            title = req.article_title or "Crypto Quiz"
+            content = req.article_content
+
+        questions = await generate_quiz_questions(title, content, req.num_questions)
+
+        return {
+            "quiz_id": f"solo_{secrets.token_hex(8)}",
+            "article_title": title,
+            "questions": questions,
+        }
+    except Exception as e:
+        logger.error(f"Solo quiz error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/session/create")
 async def create_session(req: SessionCreateRequest):
     try:
@@ -536,7 +546,6 @@ async def join_session(req: SessionJoinRequest):
 
 @app.post("/api/agents/register")
 async def register_agent(req: AgentRegisterRequest):
-    """Self-serve registration — returns an API key instantly."""
     existing = await db.agents.find_one({"email": req.email})
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -564,7 +573,6 @@ async def register_agent(req: AgentRegisterRequest):
 
 @app.get("/api/agents/me")
 async def get_agent_profile(x_api_key: Optional[str] = Header(None)):
-    """Returns agent profile, usage stats and quiz history."""
     agent = await get_agent(x_api_key)
     today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -593,7 +601,6 @@ async def agent_create_session(
     req: SessionCreateRequest,
     x_api_key: Optional[str] = Header(None)
 ):
-    """Authenticated session creation for agents."""
     agent = await get_agent(x_api_key)
     await check_daily_limit(agent)
 
@@ -641,7 +648,6 @@ async def agent_join_session(
     req: AgentJoinRequest,
     x_api_key: Optional[str] = Header(None)
 ):
-    """Agents join a session — returns player_id for WebSocket auth."""
     agent = await get_agent(x_api_key)
 
     code = req.code.strip().upper()
@@ -681,7 +687,6 @@ async def agent_session_status(
     code: str,
     x_api_key: Optional[str] = Header(None)
 ):
-    """Poll session state — useful for agents that can't use WebSockets."""
     await get_agent(x_api_key)
     session = await db.sessions.find_one({"code": code.upper()})
     if not session:
