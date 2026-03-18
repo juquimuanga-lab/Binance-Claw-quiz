@@ -7,6 +7,7 @@ import HostPage from "@/pages/HostPage";
 import JoinPage from "@/pages/JoinPage";
 import GamePage from "@/pages/GamePage";
 import SoloPage from "@/pages/SoloPage";
+import AgentPortalPage from "@/pages/AgentPortalPage";
 
 function TelegramRedirect({ children }) {
   const [searchParams] = useSearchParams();
@@ -52,6 +53,7 @@ function App() {
             <Route path="/join" element={<JoinPage />} />
             <Route path="/game/:code" element={<GamePage />} />
             <Route path="/solo" element={<SoloPage />} />
+            <Route path="/agents" element={<AgentPortalPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </TelegramRedirect>
