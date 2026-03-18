@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
 import { fireCelebration } from '@/utils/celebration';
 
-// ✅ FIXED: fallback to window.location.origin prevents crash if env var is missing
 const API = process.env.REACT_APP_BACKEND_URL || window.location.origin;
 const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
 
@@ -16,7 +15,6 @@ export default function GamePage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const role = searchParams.get('role') || 'player';
-  // ✅ FIXED: pid now correctly read from URL (HostPage passes pid=host_${code})
   const playerId = searchParams.get('pid') || `player_${Math.random().toString(36).slice(2, 7)}`;
   const isHost = role === 'host';
 
@@ -33,9 +31,11 @@ export default function GamePage() {
   const [answeredCount, setAnsweredCount] = useState(0);
   const [session, setSession] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [wsReady, setWsReady] = useState(false); // ✅ track WS ready state
 
   const ws = useRef(null);
   const answerTime = useRef(null);
+  const pingInterval = useRef(null); // ✅ keep-alive ping
 
   useEffect(() => {
     fetch(`${API}/api/session/${code}`)
@@ -52,9 +52,21 @@ export default function GamePage() {
     const socket = new WebSocket(`${WS_URL}/api/ws/${code}/${playerId}`);
     ws.current = socket;
 
+    // ✅ Mark ready when open + start keep-alive ping
+    socket.onopen = () => {
+      setWsReady(true);
+      pingInterval.current = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 20000); // ping every 20s to prevent idle disconnect
+    };
+
     socket.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       switch (msg.type) {
+        case 'pong':
+          break; // keep-alive response, ignore
         case 'player_joined':
           setPlayers(msg.players || []);
           break;
@@ -96,18 +108,46 @@ export default function GamePage() {
       }
     };
 
-    socket.onclose = () => {};
-    return () => socket.close();
+    socket.onclose = () => {
+      setWsReady(false); // ✅ mark not ready on close
+      clearInterval(pingInterval.current);
+    };
+
+    socket.onerror = (err) => {
+      console.error('WebSocket error:', err);
+      setWsReady(false);
+    };
+
+    return () => {
+      clearInterval(pingInterval.current);
+      socket.close();
+    };
   }, [code, playerId]);
 
-  const startGame = () => ws.current?.send(JSON.stringify({ type: 'start_game' }));
-  const nextQuestion = () => ws.current?.send(JSON.stringify({ type: 'next_question' }));
+  // ✅ Safe send — checks readyState before sending
+  const safeSend = (msg) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(msg));
+      return true;
+    }
+    console.warn('WebSocket not ready, message dropped:', msg);
+    return false;
+  };
+
+  const startGame = () => {
+    const sent = safeSend({ type: 'start_game' });
+    if (!sent) {
+      alert('Connection not ready. Please wait a moment and try again.');
+    }
+  };
+
+  const nextQuestion = () => safeSend({ type: 'next_question' });
 
   const submitAnswer = (opt) => {
     if (selected !== null || isHost) return;
     const ms = Date.now() - (answerTime.current || Date.now());
     setSelected(opt);
-    ws.current?.send(JSON.stringify({ type: 'answer', option: opt, time_ms: ms }));
+    safeSend({ type: 'answer', option: opt, time_ms: ms });
   };
 
   const copyCode = () => {
@@ -126,6 +166,12 @@ export default function GamePage() {
           <h2 data-testid="lobby-title" className="text-2xl font-bold mb-6" style={{ color: '#F3BA2F' }}>
             {isHost ? 'Game Lobby' : 'Waiting for Host...'}
           </h2>
+
+          {/* ✅ Show WS connection status */}
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <div className={`w-2 h-2 rounded-full ${wsReady ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-xs text-gray-500">{wsReady ? 'Connected' : 'Connecting...'}</span>
+          </div>
 
           <div
             data-testid="join-code-display"
@@ -167,11 +213,11 @@ export default function GamePage() {
             <button
               data-testid="start-game-btn"
               onClick={startGame}
-              disabled={players.length === 0}
+              disabled={players.length === 0 || !wsReady} // ✅ disabled until WS ready
               className="w-full h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-30"
               style={{ background: '#F3BA2F', color: '#000' }}
             >
-              <Play size={20} /> Start Game
+              <Play size={20} /> {wsReady ? 'Start Game' : 'Connecting...'}
             </button>
           )}
         </motion.div>
@@ -183,11 +229,7 @@ export default function GamePage() {
   if (state === 'starting') {
     return (
       <div className="min-h-screen flex items-center justify-center relative z-10">
-        <motion.div
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          className="text-center"
-        >
+        <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="text-center">
           <h2 className="text-5xl font-bold" style={{ color: '#F3BA2F' }}>Get Ready!</h2>
           <p className="text-gray-400 mt-3">{totalQ} questions</p>
         </motion.div>
@@ -204,10 +246,7 @@ export default function GamePage() {
           <span className="text-gray-500 text-sm font-mono">{qIndex + 1}/{totalQ}</span>
           <div className="flex items-center gap-2">
             <Clock size={16} style={{ color: progress < 0.3 ? '#FF2E63' : '#F3BA2F' }} />
-            <span
-              className="text-xl font-bold font-mono"
-              style={{ color: progress < 0.3 ? '#FF2E63' : '#F3BA2F' }}
-            >
+            <span className="text-xl font-bold font-mono" style={{ color: progress < 0.3 ? '#FF2E63' : '#F3BA2F' }}>
               {timer}
             </span>
           </div>
@@ -267,11 +306,7 @@ export default function GamePage() {
         </div>
 
         {selected !== null && !isHost && (
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center text-gray-500 text-sm mt-4"
-          >
+          <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center text-gray-500 text-sm mt-4">
             Answer locked! Waiting for results...
           </motion.p>
         )}
@@ -315,12 +350,8 @@ export default function GamePage() {
                   <span className="text-sm font-medium">{s.nickname}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  {s.delta > 0 && (
-                    <span className="text-xs" style={{ color: '#00FF29' }}>+{s.delta}</span>
-                  )}
-                  {s.is_correct === false && s.answered && (
-                    <span className="text-xs" style={{ color: '#FF2E63' }}>X</span>
-                  )}
+                  {s.delta > 0 && <span className="text-xs" style={{ color: '#00FF29' }}>+{s.delta}</span>}
+                  {s.is_correct === false && s.answered && <span className="text-xs" style={{ color: '#FF2E63' }}>X</span>}
                   <span className="font-mono font-bold text-sm" style={{ color: '#F3BA2F' }}>{s.score}</span>
                 </div>
               </div>
