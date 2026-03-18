@@ -1,5 +1,6 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response, JSONResponse
+from fastapi import FastAPI, APIRouter, Query, Request
+from fastapi.responses import Response
+from fastapi.routing import APIRoute
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -11,7 +12,6 @@ import re
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, Optional
-from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 
@@ -27,9 +27,11 @@ db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
+GEMINI_MODEL = "gemini-2.0-flash"
+
 app = FastAPI()
 
-# ✅ THE ONLY CORS SETUP — middleware that injects headers on EVERY response
+# ✅ CORS middleware — must be added BEFORE include_router
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -48,22 +50,8 @@ async def cors_middleware(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
-api_router = APIRouter(prefix="/api")
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ================= SAFE ARTICLE STORE =================
-
-ARTICLES = [
-    {"title": "What Is Bitcoin?", "url": "https://academy.binance.com/en/articles/what-is-bitcoin"},
-    {"title": "What Is Ethereum?", "url": "https://academy.binance.com/en/articles/what-is-ethereum"},
-    {"title": "What Is Blockchain?", "url": "https://academy.binance.com/en/articles/what-is-blockchain"},
-    {"title": "What Is DeFi?", "url": "https://academy.binance.com/en/articles/what-is-defi"},
-    {"title": "What Are NFTs?", "url": "https://academy.binance.com/en/articles/what-are-nfts"},
-]
-
-ARTICLE_CACHE: Dict[str, dict] = {}
 
 # ================= MODELS =================
 
@@ -150,7 +138,7 @@ async def fetch_article_content(url: str) -> dict:
     except Exception as e:
         logger.error(f"Scrape failed, using AI fallback: {e}")
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL)
         prompt = f"""
 Write a 400-word educational crypto article about:
 
@@ -170,7 +158,7 @@ Make it clear and informative.
 
 async def generate_quiz_questions(title: str, content: str, num: int):
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL)
 
         summary_prompt = f"""
 Summarize this crypto article in 200 words:
@@ -183,7 +171,7 @@ Summarize this crypto article in 200 words:
         quiz_prompt = f"""
 Generate {num} multiple choice questions.
 
-Return JSON:
+Return JSON only, no markdown, no backticks:
 [
  {{
   "question":"...",
@@ -197,7 +185,12 @@ Context:
 {summary}
 """
         response = model.generate_content(quiz_prompt)
-        text = response.text
+        text = response.text.strip()
+
+        # ✅ Strip markdown code fences if Gemini wraps in ```json
+        text = re.sub(r"^```json\s*", "", text)
+        text = re.sub(r"^```\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
 
         match = re.search(r'\[[\s\S]*\]', text)
         if not match:
@@ -218,24 +211,25 @@ Context:
         ]
 
 # ================= ROUTES =================
+# ✅ Define routes directly on app — no separate router to avoid prefix/registration issues
 
 @app.get("/")
 async def root():
     return {"message": "API is live"}
 
-@api_router.get("/health")
+@app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "model": GEMINI_MODEL}
 
-@api_router.get("/academy/search")
+@app.get("/api/academy/search")
 async def search_academy(q: str = Query(...)):
     return {"results": await search_binance_academy(q)}
 
-@api_router.post("/academy/article")
+@app.post("/api/academy/article")
 async def get_article(req: ArticleFetchRequest):
     return await fetch_article_content(req.url)
 
-@api_router.post("/quiz/generate")
+@app.post("/api/quiz/generate")
 async def generate_quiz(req: GenerateQuizRequest):
     try:
         if not req.article_content:
