@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Zap, Users, User, HelpCircle } from 'lucide-react';
+import { Zap, Users, User, HelpCircle, Terminal } from 'lucide-react';
 import GuideModal from '@/components/GuideModal';
 
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -34,6 +34,14 @@ export default function HomePage() {
       color: '#00FF29',
       path: '/solo',
       testId: 'solo-quiz-btn',
+    },
+    {
+      title: 'Agent Portal',
+      desc: 'Get an API key and host quizzes programmatically as a Claw Agent',
+      icon: Terminal,
+      color: '#BF5AF2',
+      path: '/agents',
+      testId: 'agent-portal-btn',
     },
   ];
 
