@@ -1,4 +1,4 @@
-frofrom fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
