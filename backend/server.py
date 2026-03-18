@@ -27,8 +27,6 @@ db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-# ✅ Updated model — llama3-8b-8192 is decommissioned
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 app = FastAPI()
@@ -77,7 +75,8 @@ class GameManager:
         if code not in self.rooms:
             return
         dead = []
-        for pid, ws in self.rooms[code].items():
+        # ✅ list() snapshot prevents dict-changed-size crash
+        for pid, ws in list(self.rooms[code].items()):
             try:
                 await ws.send_json(message)
             except Exception:
@@ -318,10 +317,9 @@ async def run_game(code: str):
         for i, q in enumerate(questions):
             await run_question(code, q, i, total)
             if i < total - 1:
-                # ✅ Wait for host to press Next Question
                 state["waiting_for_next"] = True
-                logger.info(f"Waiting for host next_question signal, Q{i+1}/{total}")
-                for _ in range(60):  # wait up to 60s
+                logger.info(f"Waiting for host next_question signal Q{i+1}/{total}")
+                for _ in range(60):
                     await asyncio.sleep(1)
                     if not state.get("waiting_for_next", True):
                         break
@@ -480,7 +478,6 @@ async def join_session(req: SessionJoinRequest):
 async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
     code = code.upper()
 
-    # ✅ Manually accept with CORS headers to fix 403
     await ws.accept()
     if code not in manager.rooms:
         manager.rooms[code] = {}
@@ -488,7 +485,6 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
 
     logger.info(f"WS connected: {player_id} -> room {code}")
 
-    # Load session into memory if not already there
     if code not in manager.game_state:
         session = await db.sessions.find_one({"code": code})
         if session:
@@ -503,7 +499,6 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
             }
 
     try:
-        # Broadcast updated player list on connect
         session = await db.sessions.find_one({"code": code})
         if session:
             await manager.broadcast(code, {
@@ -511,14 +506,28 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
                 "players": session.get("players", []),
             })
 
-        # ✅ Keep-alive ping loop + message handler
-        async def receive_loop():
+        # ✅ Server-side keepalive — prevents Render 30s idle timeout
+        async def keepalive():
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    if ws.client_state.value == 1:
+                        await ws.send_json({"type": "pong"})
+                except Exception:
+                    break
+
+        keepalive_task = asyncio.create_task(keepalive())
+
+        try:
             while True:
                 data = await ws.receive_json()
                 msg_type = data.get("type")
                 logger.info(f"WS message from {player_id}: {msg_type}")
 
-                if msg_type == "start_game" and player_id.startswith("host_"):
+                if msg_type == "ping":
+                    await ws.send_json({"type": "pong"})
+
+                elif msg_type == "start_game" and player_id.startswith("host_"):
                     state = manager.game_state.get(code)
                     if state and not state.get("started"):
                         state["started"] = True
@@ -550,10 +559,8 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
                     if state:
                         state["waiting_for_next"] = False
 
-                elif msg_type == "ping":
-                    await ws.send_json({"type": "pong"})
-
-        await receive_loop()
+        finally:
+            keepalive_task.cancel()
 
     except WebSocketDisconnect:
         manager.disconnect(code, player_id)
