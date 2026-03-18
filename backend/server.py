@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,6 +8,7 @@ import json
 import secrets
 import httpx
 import re
+import datetime
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, Optional
@@ -26,11 +27,12 @@ db = mongo_client[os.environ.get('DB_NAME', 'moltbot_app')]
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-GROQ_MODEL = "llama3-8b-8192"  # fast + generous free tier
+GROQ_MODEL = "llama3-8b-8192"
 
 app = FastAPI()
 
-# ✅ Single CORS middleware
+# ================= CORS =================
+
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -55,7 +57,6 @@ logger = logging.getLogger(__name__)
 # ================= HELPERS =================
 
 def groq_complete(prompt: str) -> str:
-    """Simple wrapper — calls Groq and returns text."""
     chat = groq_client.chat.completions.create(
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
@@ -80,6 +81,10 @@ class SessionCreateRequest(BaseModel):
     article_title: Optional[str] = None
     article_content: Optional[str] = None
     num_questions: int = 10
+
+class SessionJoinRequest(BaseModel):
+    code: str
+    nickname: str
 
 # ================= SEARCH =================
 
@@ -121,7 +126,6 @@ async def search_binance_academy(query: str) -> list:
 # ================= FETCH ARTICLE =================
 
 async def fetch_article_content(url: str) -> dict:
-    # Step 1 — try scraping first (no AI needed)
     try:
         async with httpx.AsyncClient(
             headers={"User-Agent": "Mozilla/5.0"},
@@ -156,7 +160,6 @@ async def fetch_article_content(url: str) -> dict:
     except Exception as e:
         logger.error(f"Scrape failed: {e}")
 
-    # Step 2 — Groq AI fallback
     try:
         topic = url.split("/")[-1].replace("-", " ")
         prompt = f"Write a 400-word educational crypto article about: {topic}. Make it clear and informative."
@@ -201,8 +204,6 @@ Topic: {title}
 Context: {summary}
 """
         text = groq_complete(quiz_prompt).strip()
-
-        # Strip markdown fences if present
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"^```\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -285,7 +286,6 @@ async def create_session(req: SessionCreateRequest):
 
         code = secrets.token_hex(4).upper()
 
-        import datetime
         session_doc = {
             "code": code,
             "article_title": title,
@@ -304,3 +304,46 @@ async def create_session(req: SessionCreateRequest):
     except Exception as e:
         logger.error(f"Session create error: {str(e)}")
         return {"error": str(e)}
+
+@app.post("/api/session/join")
+async def join_session(req: SessionJoinRequest):
+    try:
+        code = req.code.strip().upper()
+        nickname = req.nickname.strip()
+
+        if not code or not nickname:
+            raise HTTPException(status_code=400, detail="Code and nickname are required")
+
+        session = await db.sessions.find_one({"code": code})
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Game not found. Check your code and try again.")
+
+        if session.get("status") == "finished":
+            raise HTTPException(status_code=400, detail="This game has already ended.")
+
+        player_id = f"player_{secrets.token_hex(6)}"
+        player = {
+            "player_id": player_id,
+            "nickname": nickname,
+            "score": 0,
+            "joined_at": str(datetime.datetime.utcnow()),
+        }
+
+        await db.sessions.update_one(
+            {"code": code},
+            {"$push": {"players": player}}
+        )
+
+        session.pop("_id", None)
+
+        return {
+            "player_id": player_id,
+            "session": session
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Join session error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Server error while joining game")
