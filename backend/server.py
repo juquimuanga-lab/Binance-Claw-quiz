@@ -1,6 +1,5 @@
 from fastapi import FastAPI, APIRouter, Query, Request
 from fastapi.responses import Response
-from fastapi.routing import APIRoute
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -31,7 +30,7 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 app = FastAPI()
 
-# ✅ CORS middleware — must be added BEFORE include_router
+# ✅ Single CORS middleware
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -64,6 +63,13 @@ class GenerateQuizRequest(BaseModel):
     article_content: Optional[str] = None
     num_questions: int = 10
 
+# ✅ NEW — matches exactly what HostPage.js sends
+class SessionCreateRequest(BaseModel):
+    article_url: str
+    article_title: Optional[str] = None
+    article_content: Optional[str] = None
+    num_questions: int = 10
+
 # ================= SEARCH =================
 
 async def search_binance_academy(query: str) -> list:
@@ -83,7 +89,6 @@ async def search_binance_academy(query: str) -> list:
     }
 
     results = []
-
     for key, slug in mapping.items():
         if key in query:
             results.append({
@@ -137,7 +142,6 @@ async def fetch_article_content(url: str) -> dict:
 
     except Exception as e:
         logger.error(f"Scrape failed, using AI fallback: {e}")
-
         model = genai.GenerativeModel(GEMINI_MODEL)
         prompt = f"""
 Write a 400-word educational crypto article about:
@@ -147,7 +151,6 @@ Write a 400-word educational crypto article about:
 Make it clear and informative.
 """
         res = model.generate_content(prompt)
-
         return {
             "title": url.split("/")[-1].replace("-", " ").title(),
             "content": res.text,
@@ -187,7 +190,6 @@ Context:
         response = model.generate_content(quiz_prompt)
         text = response.text.strip()
 
-        # ✅ Strip markdown code fences if Gemini wraps in ```json
         text = re.sub(r"^```json\s*", "", text)
         text = re.sub(r"^```\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -211,7 +213,6 @@ Context:
         ]
 
 # ================= ROUTES =================
-# ✅ Define routes directly on app — no separate router to avoid prefix/registration issues
 
 @app.get("/")
 async def root():
@@ -240,11 +241,7 @@ async def generate_quiz(req: GenerateQuizRequest):
             title = req.article_title
             content = req.article_content
 
-        questions = await generate_quiz_questions(
-            title,
-            content,
-            req.num_questions
-        )
+        questions = await generate_quiz_questions(title, content, req.num_questions)
 
         doc = {
             "quiz_id": f"quiz_{secrets.token_hex(8)}",
@@ -254,9 +251,46 @@ async def generate_quiz(req: GenerateQuizRequest):
 
         await db.quizzes.insert_one(doc)
         doc.pop("_id", None)
-
         return doc
 
     except Exception as e:
         logger.error(f"Quiz endpoint error: {str(e)}")
+        return {"error": str(e)}
+
+# ✅ NEW ENDPOINT — this is what HostPage.js actually calls
+@app.post("/api/session/create")
+async def create_session(req: SessionCreateRequest):
+    try:
+        # Step 1 — fetch article if content not provided
+        if not req.article_content:
+            article = await fetch_article_content(req.article_url)
+            title = article["title"]
+            content = article["content"]
+        else:
+            title = req.article_title or "Crypto Quiz"
+            content = req.article_content
+
+        # Step 2 — generate quiz questions
+        questions = await generate_quiz_questions(title, content, req.num_questions)
+
+        # Step 3 — create session with a short join code
+        code = secrets.token_hex(4).upper()  # e.g. "A3F9C2B1"
+
+        session_doc = {
+            "code": code,
+            "article_title": title,
+            "article_url": req.article_url,
+            "questions": questions,
+            "status": "waiting",
+            "players": [],
+            "created_at": str(__import__('datetime').datetime.utcnow()),
+        }
+
+        await db.sessions.insert_one(session_doc)
+        session_doc.pop("_id", None)
+
+        return session_doc
+
+    except Exception as e:
+        logger.error(f"Session create error: {str(e)}")
         return {"error": str(e)}
