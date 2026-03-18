@@ -260,6 +260,3 @@ async def generate_quiz(req: GenerateQuizRequest):
     except Exception as e:
         logger.error(f"Quiz endpoint error: {str(e)}")
         return {"error": str(e)}
-
-# ================= APP =================
-app.include_router(api_router)
