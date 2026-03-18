@@ -1,1 +1,98 @@
+import telebot
+import os
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
+# ================= CONFIG =================
+
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+WEBAPP_URL = "https://binance-claw-quiz-app.onrender.com"
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# ================= /start =================
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    name = message.from_user.first_name or "Player"
+
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton(
+            text="🎮 Play Now",
+            web_app=WebAppInfo(url=WEBAPP_URL)
+        )
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"👋 Welcome {name}!\n\n"
+        f"🦞 *Binance Claw Quiz*\n\n"
+        f"Test your crypto knowledge with AI-generated quizzes from Binance Academy.\n\n"
+        f"• 🏆 Compete with friends in real-time\n"
+        f"• 🤖 AI-powered questions\n"
+        f"• ⚡ Score points based on speed\n\n"
+        f"Press *Play Now* to start! 👇",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# ================= /host =================
+
+@bot.message_handler(commands=['host'])
+def host(message):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton(
+            text="🎯 Create a Quiz",
+            web_app=WebAppInfo(url=f"{WEBAPP_URL}/host")
+        )
+    )
+    bot.send_message(
+        message.chat.id,
+        "🎯 *Host a Quiz*\n\nSearch Binance Academy, pick a topic, and challenge your friends!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# ================= /join =================
+
+@bot.message_handler(commands=['join'])
+def join(message):
+    parts = message.text.split()
+    code = parts[1].upper() if len(parts) > 1 else ""
+    url = f"{WEBAPP_URL}/join?code={code}" if code else f"{WEBAPP_URL}/join"
+
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton(
+            text="🚀 Join Game",
+            web_app=WebAppInfo(url=url)
+        )
+    )
+
+    bot.send_message(
+        message.chat.id,
+        f"🚀 *Join a Game*\n\n{'Enter code: `' + code + '`' if code else 'Enter your game code in the app.'}\n\nPress Join Game to open the quiz!",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+# ================= /help =================
+
+@bot.message_handler(commands=['help'])
+def help_cmd(message):
+    bot.send_message(
+        message.chat.id,
+        "🦅 *Binance Claw Quiz — Commands*\n\n"
+        "/start — Launch the app\n"
+        "/host — Create a new quiz session\n"
+        "/join — Join a game (e.g. /join ABC123)\n"
+        "/help — Show this message",
+        parse_mode="Markdown"
+    )
+
+# ================= POLLING =================
+
+if __name__ == "__main__":
+    print(f"Bot starting... WEBAPP_URL: {WEBAPP_URL}")
+    bot.infinity_polling()
