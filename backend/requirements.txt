@@ -10,4 +10,4 @@ lxml==6.0.2
 websockets==15.0.1
 python-multipart==0.0.21
 starlette==0.37.2
-google-generativeai==0.7.2
+groq
