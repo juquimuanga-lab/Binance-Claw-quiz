@@ -1,7 +1,6 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response, JSONResponse
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -11,7 +10,7 @@ import httpx
 import re
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 import google.generativeai as genai
@@ -30,13 +29,24 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ✅ THE ONLY CORS SETUP — middleware that injects headers on EVERY response
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
+            }
+        )
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 api_router = APIRouter(prefix="/api")
 
@@ -207,55 +217,11 @@ Context:
             }
         ]
 
-# ================= WEBSOCKET MANAGER =================
-
-class ConnectionManager:
-    def __init__(self):
-        self.rooms: Dict[str, List[WebSocket]] = {}
-        self.answers: Dict[str, Dict[str, dict]] = {}  # code -> {player_id -> answer}
-
-    async def connect(self, code: str, ws: WebSocket):
-        await ws.accept()
-        if code not in self.rooms:
-            self.rooms[code] = []
-        self.rooms[code].append(ws)
-
-    def disconnect(self, code: str, ws: WebSocket):
-        if code in self.rooms:
-            try:
-                self.rooms[code].remove(ws)
-            except ValueError:
-                pass
-
-    async def broadcast(self, code: str, message: dict):
-        if code in self.rooms:
-            dead = []
-            for ws in self.rooms[code]:
-                try:
-                    await ws.send_json(message)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                self.disconnect(code, ws)
-
-manager = ConnectionManager()
-
 # ================= ROUTES =================
 
 @app.get("/")
 async def root():
     return {"message": "API is live"}
-
-@app.options("/{full_path:path}")
-async def preflight_handler(full_path: str):
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
 
 @api_router.get("/health")
 async def health():
@@ -300,196 +266,6 @@ async def generate_quiz(req: GenerateQuizRequest):
     except Exception as e:
         logger.error(f"Quiz endpoint error: {str(e)}")
         return {"error": str(e)}
-
-# ================= SESSION ROUTES =================
-
-@api_router.get("/session/{code}")
-async def get_session(code: str):
-    session = await db.sessions.find_one({"code": code}, {"_id": 0})
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
-
-@api_router.post("/session/create")
-async def create_session(req: GenerateQuizRequest):
-    try:
-        # Generate quiz first
-        if not req.article_content:
-            article = await fetch_article_content(req.article_url)
-            title = article["title"]
-            content = article["content"]
-        else:
-            title = req.article_title
-            content = req.article_content
-
-        questions = await generate_quiz_questions(title, content, req.num_questions)
-
-        code = secrets.token_hex(3).upper()  # e.g. "A3F9C1"
-
-        session = {
-            "code": code,
-            "article_title": title,
-            "article_url": req.article_url,
-            "questions": questions,
-            "total_questions": len(questions),
-            "current_index": 0,
-            "players": [],
-            "state": "lobby",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        await db.sessions.insert_one(session)
-
-        return {"code": code, "total_questions": len(questions), "article_title": title}
-
-    except Exception as e:
-        logger.error(f"Session create error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ================= WEBSOCKET =================
-
-@api_router.websocket("/ws/{code}/{player_id}")
-async def websocket_endpoint(websocket: WebSocket, code: str, player_id: str):
-    await manager.connect(code, websocket)
-    logger.info(f"WS connected: {player_id} -> room {code}")
-
-    try:
-        # Register player
-        nickname = player_id.replace("host_", "Host") if player_id.startswith("host_") else player_id
-        await db.sessions.update_one(
-            {"code": code, "players.player_id": {"$ne": player_id}},
-            {"$push": {"players": {"player_id": player_id, "nickname": nickname, "score": 0}}}
-        )
-
-        session = await db.sessions.find_one({"code": code}, {"_id": 0})
-        players = session.get("players", []) if session else []
-        await manager.broadcast(code, {"type": "player_joined", "players": players})
-
-        while True:
-            data = await websocket.receive_json()
-            msg_type = data.get("type")
-            logger.info(f"WS msg from {player_id}: {msg_type}")
-
-            if msg_type == "start_game":
-                session = await db.sessions.find_one({"code": code})
-                questions = session.get("questions", [])
-                await db.sessions.update_one({"code": code}, {"$set": {"state": "playing", "current_index": 0}})
-
-                await manager.broadcast(code, {
-                    "type": "game_starting",
-                    "total_questions": len(questions)
-                })
-
-                if questions:
-                    q = questions[0]
-                    await manager.broadcast(code, {
-                        "type": "question",
-                        "index": 0,
-                        "total": len(questions),
-                        "question": q["question"],
-                        "options": q["options"],
-                        "duration": 20
-                    })
-
-            elif msg_type == "answer":
-                session = await db.sessions.find_one({"code": code})
-                questions = session.get("questions", [])
-                current = session.get("current_index", 0)
-                players = session.get("players", [])
-
-                if current < len(questions):
-                    correct = questions[current].get("correct", 0)
-                    is_correct = data.get("option") == correct
-                    time_ms = data.get("time_ms", 20000)
-                    points = max(0, int(1000 * (1 - time_ms / 20000))) if is_correct else 0
-
-                    # Update player score
-                    await db.sessions.update_one(
-                        {"code": code, "players.player_id": player_id},
-                        {"$inc": {"players.$.score": points}}
-                    )
-
-                    # Count answered
-                    if code not in manager.answers:
-                        manager.answers[code] = {}
-                    manager.answers[code][player_id] = {"correct": is_correct, "points": points}
-
-                    answered_count = len(manager.answers[code])
-                    await manager.broadcast(code, {
-                        "type": "player_answered",
-                        "answered_count": answered_count
-                    })
-
-                    # If all players answered, send results
-                    non_host_players = [p for p in players if not p["player_id"].startswith("host_")]
-                    if answered_count >= len(non_host_players) and len(non_host_players) > 0:
-                        session = await db.sessions.find_one({"code": code})
-                        updated_players = sorted(session.get("players", []), key=lambda x: x.get("score", 0), reverse=True)
-                        scores = [
-                            {
-                                "player_id": p["player_id"],
-                                "nickname": p["nickname"],
-                                "score": p.get("score", 0),
-                                "delta": manager.answers[code].get(p["player_id"], {}).get("points", 0),
-                                "is_correct": manager.answers[code].get(p["player_id"], {}).get("correct", False),
-                                "answered": p["player_id"] in manager.answers[code]
-                            }
-                            for p in updated_players
-                        ]
-                        await manager.broadcast(code, {
-                            "type": "answer_result",
-                            "correct": correct,
-                            "explanation": questions[current].get("explanation", ""),
-                            "question_index": current,
-                            "scores": scores
-                        })
-                        manager.answers[code] = {}  # reset for next question
-
-            elif msg_type == "next_question":
-                session = await db.sessions.find_one({"code": code})
-                questions = session.get("questions", [])
-                current = session.get("current_index", 0) + 1
-                await db.sessions.update_one({"code": code}, {"$set": {"current_index": current}})
-                manager.answers[code] = {}  # reset answers
-
-                if current < len(questions):
-                    q = questions[current]
-                    await manager.broadcast(code, {
-                        "type": "question",
-                        "index": current,
-                        "total": len(questions),
-                        "question": q["question"],
-                        "options": q["options"],
-                        "duration": 20
-                    })
-                else:
-                    session = await db.sessions.find_one({"code": code})
-                    final_players = sorted(session.get("players", []), key=lambda x: x.get("score", 0), reverse=True)
-                    standings = [
-                        {
-                            "player_id": p["player_id"],
-                            "nickname": p["nickname"],
-                            "score": p.get("score", 0),
-                            "rank": i + 1
-                        }
-                        for i, p in enumerate(final_players)
-                    ]
-                    await db.sessions.update_one({"code": code}, {"$set": {"state": "finished"}})
-                    await manager.broadcast(code, {
-                        "type": "game_over",
-                        "final_standings": standings
-                    })
-
-    except WebSocketDisconnect:
-        manager.disconnect(code, websocket)
-        logger.info(f"WS disconnected: {player_id} from room {code}")
-        session = await db.sessions.find_one({"code": code}, {"_id": 0})
-        players = session.get("players", []) if session else []
-        await manager.broadcast(code, {"type": "player_left", "players": players})
-
-    except Exception as e:
-        logger.error(f"WS error {player_id}: {str(e)}")
-        manager.disconnect(code, websocket)
 
 # ================= APP =================
 app.include_router(api_router)
