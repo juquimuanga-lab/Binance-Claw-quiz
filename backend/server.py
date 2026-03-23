@@ -928,13 +928,20 @@ async def trending_topics():
     try:
         seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
 
+        # ✅ Match sessions with OR without created_date so old sessions count too
         pipeline = [
-            {"$match": {"created_date": {"$gte": seven_days_ago}}},
+            {"$match": {
+                "$or": [
+                    {"created_date": {"$gte": seven_days_ago}},
+                    {"created_date": {"$exists": False}}
+                ]
+            }},
             {"$group": {
                 "_id": "$article_title",
                 "count": {"$sum": 1},
                 "article_url": {"$first": "$article_url"},
             }},
+            {"$match": {"_id": {"$ne": None}}},
             {"$sort": {"count": -1}},
             {"$limit": 5},
             {"$project": {
