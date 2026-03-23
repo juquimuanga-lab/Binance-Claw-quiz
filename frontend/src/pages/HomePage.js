@@ -25,24 +25,25 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState('leaderboard');
 
   useEffect(() => {
-    const fetchAnalytics = async () => {
-      try {
-        const [lbRes, trRes] = await Promise.all([
-          fetch(`${API}/api/analytics/leaderboard`),
-          fetch(`${API}/api/analytics/trending`),
-        ]);
-        const lb = await lbRes.json();
-        const tr = await trRes.json();
-        setLeaderboard(lb);
-        setTrending(tr);
-      } catch (e) {
-        console.error('Analytics fetch failed', e);
-      } finally {
-        setLoadingStats(false);
-      }
-    };
-    fetchAnalytics();
-  }, []);
+  const fetchAnalytics = async () => {
+    try {
+      const [lbRes, trRes] = await Promise.all([
+        fetch(`${API}/api/analytics/leaderboard`),
+        fetch(`${API}/api/analytics/trending`),
+      ]);
+      if (lbRes.ok) setLeaderboard(await lbRes.json());
+      if (trRes.ok) setTrending(await trRes.json());
+    } catch (e) {
+      console.error('Analytics fetch failed', e);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+  fetchAnalytics();
+  // ✅ Refresh every 60 seconds so stats stay live
+  const interval = setInterval(fetchAnalytics, 60000);
+  return () => clearInterval(interval);
+}, []);
 
   const maxCount = trending?.trending?.[0]?.count || 1;
   const maxScore = leaderboard?.top_players?.[0]?.total_score || 1;
