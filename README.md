@@ -1,4 +1,4 @@
-# 🦅 Binance Claw Quiz
+# 🦞 Binance Claw Quiz
 
 A real-time multiplayer crypto quiz app powered by AI. Hosts create quiz sessions from Binance Academy articles, players join with a game code, and everyone competes live.
 
