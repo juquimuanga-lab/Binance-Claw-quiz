@@ -55,7 +55,7 @@ if TELEGRAM_BOT_TOKEN:
         tg_bot.send_message(
             message.chat.id,
             f"👋 Welcome {name}!\n\n"
-            f"🦞 *Binance Claw Quiz*\n\n"
+            f"🦅 *Binance Claw Quiz*\n\n"
             f"Test your crypto knowledge with AI-generated quizzes from Binance Academy.\n\n"
             f"• 🏆 Compete with friends in real-time\n"
             f"• 🤖 AI-powered questions\n"
@@ -265,6 +265,16 @@ class AgentRegisterRequest(BaseModel):
 class AgentJoinRequest(BaseModel):
     code: str
     nickname: str
+
+# ✅ NEW — BUID submission model
+class BuidSubmitRequest(BaseModel):
+    code: str
+    player_id: str
+    nickname: str
+    buid: str
+    rank: int
+    score: int
+    host_chat_id: Optional[str] = None
 
 # ================= ARTICLE LIBRARY =================
 
@@ -928,7 +938,6 @@ async def trending_topics():
     try:
         seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
 
-        # ✅ Match sessions with OR without created_date so old sessions count too
         pipeline = [
             {"$match": {
                 "$or": [
@@ -966,6 +975,96 @@ async def trending_topics():
     except Exception as e:
         logger.error(f"Trending error: {e}")
         return {"trending": []}
+
+# ================= BUID REWARDS =================
+
+@app.post("/api/session/submit-buid")
+async def submit_buid(req: BuidSubmitRequest):
+    """
+    Called when a top 3 winner submits their BUID.
+    Saves to DB and sends a Telegram message to the host.
+    """
+    try:
+        code = req.code.strip().upper()
+
+        # Save BUID submission to DB
+        buid_doc = {
+            "code": code,
+            "player_id": req.player_id,
+            "nickname": req.nickname,
+            "buid": req.buid.strip(),
+            "rank": req.rank,
+            "score": req.score,
+            "submitted_at": str(datetime.datetime.utcnow()),
+        }
+        await db.buid_submissions.insert_one(buid_doc)
+
+        # Check if all top 3 have submitted for this session
+        submissions = await db.buid_submissions.find(
+            {"code": code}
+        ).to_list(10)
+
+        # Get session to find host chat id
+        session = await db.sessions.find_one({"code": code})
+        host_chat_id = session.get("host_chat_id") if session else None
+
+        # Send TG message to host if we have their chat id
+        if tg_bot and host_chat_id:
+            rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}
+            msg = (
+                f"🏆 *Quiz Rewards — Session {code}*\n\n"
+                f"A winner has submitted their BUID!\n\n"
+                f"{rank_emoji.get(req.rank, '🎖')} *Rank #{req.rank}*\n"
+                f"👤 Name: {req.nickname}\n"
+                f"💰 Score: {req.score:,} pts\n"
+                f"🔑 BUID: `{req.buid}`\n\n"
+            )
+
+            # If all 3 submitted, show full summary
+            if len(submissions) >= 3:
+                sorted_subs = sorted(submissions, key=lambda x: x["rank"])[:3]
+                msg = f"🏆 *All Top 3 BUIDs Received — Session {code}*\n\n"
+                for s in sorted_subs:
+                    msg += (
+                        f"{rank_emoji.get(s['rank'], '🎖')} #{s['rank']} {s['nickname']}\n"
+                        f"   Score: {s['score']:,} pts\n"
+                        f"   BUID: `{s['buid']}`\n\n"
+                    )
+                msg += "✅ Please process rewards for the above players."
+
+            try:
+                tg_bot.send_message(
+                    host_chat_id,
+                    msg,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"BUID reward message sent to host {host_chat_id}")
+            except Exception as tg_err:
+                logger.error(f"Failed to send TG message: {tg_err}")
+
+        return {
+            "success": True,
+            "message": "BUID submitted successfully",
+            "submissions_received": len(submissions),
+        }
+
+    except Exception as e:
+        logger.error(f"BUID submit error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/session/{code}/buids")
+async def get_session_buids(code: str):
+    """Get all BUID submissions for a session — for host to review."""
+    try:
+        submissions = await db.buid_submissions.find(
+            {"code": code.upper()},
+            {"_id": 0}
+        ).sort("rank", 1).to_list(10)
+        return {"code": code.upper(), "submissions": submissions}
+    except Exception as e:
+        logger.error(f"Get BUIDs error: {e}")
+        return {"code": code.upper(), "submissions": []}
 
 # ================= AGENT ROUTES =================
 
@@ -1211,6 +1310,16 @@ async def websocket_endpoint(ws: WebSocket, code: str, player_id: str):
                     )
                     logger.info(f"Starting game for room {code}")
                     asyncio.create_task(run_game(code))
+
+            elif msg_type == "register_host_chat":
+                # ✅ Host sends their Telegram chat_id so we can message them later
+                chat_id = data.get("chat_id")
+                if chat_id:
+                    await db.sessions.update_one(
+                        {"code": code},
+                        {"$set": {"host_chat_id": str(chat_id)}}
+                    )
+                    logger.info(f"Host chat_id {chat_id} registered for session {code}")
 
             elif msg_type == "answer":
                 state = manager.game_state.get(code)
