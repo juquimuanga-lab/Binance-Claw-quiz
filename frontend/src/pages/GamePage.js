@@ -1,14 +1,107 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
-import { fireCelebration } from '@/utils/celebration';
+const API = process.env.REACT_APP_BACKEND_URL || 'https://binance-claw-quiz-api.onrender.com';
 
-const API = process.env.REACT_APP_BACKEND_URL || window.location.origin;
-const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
+function BuidModal({ rank, nickname, score, code, playerId }) {
+  const [buid, setBuid] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
-const COLORS = ['#FF2E63', '#00F0FF', '#F3BA2F', '#00FF29'];
-const ICONS = [Triangle, Diamond, Circle, Square];
+  const rankEmoji = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  const rankColor = { 1: '#F3BA2F', 2: '#C0C0C0', 3: '#CD7F32' };
+
+  const submitBuid = async () => {
+    if (!buid.trim()) return;
+    setSubmitting(true);
+    try {
+      const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      await fetch(`${API}/api/session/submit-buid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          player_id: playerId,
+          nickname,
+          buid: buid.trim(),
+          rank,
+          score,
+          host_chat_id: tgUser?.id ? String(tgUser.id) : null,
+        }),
+      });
+      setSubmitted(true);
+    } catch (e) {
+      console.error('BUID submit failed', e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (dismissed) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="fixed inset-0 z-50 flex items-center justify-center px-5"
+      style={{ background: 'rgba(0,0,0,0.85)' }}
+    >
+      <motion.div
+        initial={{ scale: 0.8, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        className="w-full max-w-sm rounded-2xl p-6 text-center"
+        style={{ background: '#121212', border: `2px solid ${rankColor[rank] || '#F3BA2F'}` }}
+      >
+        {!submitted ? (
+          <>
+            <div className="text-4xl mb-2">{rankEmoji[rank] || '🎖'}</div>
+            <h3 className="text-xl font-black mb-1" style={{ color: rankColor[rank] || '#F3BA2F' }}>
+              You placed #{rank}!
+            </h3>
+            <p className="text-gray-400 text-sm mb-1">{score.toLocaleString()} points</p>
+            <p className="text-gray-300 text-sm mb-5">
+              Enter your <span style={{ color: '#F3BA2F' }}>BUID</span> to claim your reward
+            </p>
+            <input
+              value={buid}
+              onChange={e => setBuid(e.target.value)}
+              placeholder="Enter your BUID here"
+              className="w-full h-12 px-4 rounded-xl text-white text-center font-mono placeholder:text-gray-600 outline-none mb-3"
+              style={{ background: '#0A0A0A', border: '1px solid #27272A' }}
+            />
+            <button
+              onClick={submitBuid}
+              disabled={submitting || !buid.trim()}
+              className="w-full h-12 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50 mb-3"
+              style={{ background: rankColor[rank] || '#F3BA2F', color: '#000' }}
+            >
+              {submitting ? '⏳ Submitting...' : '🎁 Claim Reward'}
+            </button>
+            <button
+              onClick={() => setDismissed(true)}
+              className="text-gray-600 text-xs hover:text-gray-400 transition-colors"
+            >
+              Skip for now
+            </button>
+          </>
+        ) : (
+          <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }}>
+            <div className="text-5xl mb-3">✅</div>
+            <h3 className="text-xl font-black mb-2" style={{ color: '#00FF29' }}>BUID Submitted!</h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Your BUID has been sent to the host. Rewards will be processed shortly.
+            </p>
+            <button
+              onClick={() => setDismissed(true)}
+              className="w-full h-12 rounded-xl font-bold"
+              style={{ background: '#1E1E1E', color: '#F2F3F5' }}
+            >
+              Close
+            </button>
+          </motion.div>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
 
 export default function GamePage() {
   const { code } = useParams();
@@ -59,24 +152,33 @@ export default function GamePage() {
     ws.current = socket;
 
     socket.onopen = () => {
-      setWsReady(true);
-      setReconnecting(false);
-      console.log('WS connected');
+  setWsReady(true);
+  setReconnecting(false);
 
-      // ✅ Flush any queued messages
-      while (pendingMessages.current.length > 0) {
-        const msg = pendingMessages.current.shift();
-        socket.send(JSON.stringify(msg));
-      }
+  // ✅ If host, register Telegram chat_id for BUID reward notifications
+  if (isHost) {
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    if (tgUser?.id) {
+      socket.send(JSON.stringify({
+        type: 'register_host_chat',
+        chat_id: tgUser.id,
+      }));
+    }
+  }
 
-      // Keep-alive ping every 20s
-      clearInterval(pingInterval.current);
-      pingInterval.current = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 20000);
-    };
+  // flush pending messages
+  while (pendingMessages.current.length > 0) {
+    const msg = pendingMessages.current.shift();
+    socket.send(JSON.stringify(msg));
+  }
+
+  clearInterval(pingInterval.current);
+  pingInterval.current = setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'ping' }));
+    }
+  }, 20000);
+};
 
     socket.onmessage = (e) => {
       const msg = JSON.parse(e.data);
@@ -385,61 +487,65 @@ export default function GamePage() {
   }
 
   // ===== GAME OVER =====
-  if (state === 'game_over' && standings) {
-    const winner = standings[0];
-    const myRank = standings.find(s => s.player_id === playerId);
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10 max-w-lg mx-auto">
-        <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="text-center w-full">
-          <img src="/logo.png" alt="Binance Claw Quiz" className="w-20 h-20 mx-auto mb-2 object-contain" />
-          <Trophy size={36} style={{ color: '#F3BA2F' }} className="mx-auto mb-3" />
-          <h2 data-testid="game-over-title" className="text-3xl font-bold mb-1" style={{ color: '#F3BA2F' }}>Game Over!</h2>
-          {winner && <p className="text-lg mb-6"><span style={{ color: '#00F0FF' }}>{winner.nickname}</span> wins!</p>}
-
-          {myRank && !isHost && (
-            <div className="rounded-xl p-4 mb-6 inline-block" style={{ background: '#121212', border: '1px solid #F3BA2F50' }}>
-              <p className="text-gray-400 text-xs">Your Rank</p>
-              <p className="text-2xl font-bold" style={{ color: '#F3BA2F' }}>#{myRank.rank}</p>
-              <p className="text-sm text-gray-400">{myRank.score} pts</p>
-            </div>
-          )}
-
-          <div className="rounded-xl p-4 mb-6 w-full" style={{ background: '#121212', border: '1px solid #27272A' }}>
-            <p className="text-sm font-semibold mb-3" style={{ color: '#F3BA2F' }}>Final Standings</p>
-            <div className="space-y-2">
-              {standings.map((s, i) => (
-                <div key={s.player_id} data-testid={`final-rank-${i}`}
-                  className="flex items-center justify-between px-3 py-2 rounded-lg"
-                  style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}>
-                  <div className="flex items-center gap-2">
-                    {i === 0 && <Crown size={14} style={{ color: '#F3BA2F' }} />}
-                    {i === 1 && <span className="text-gray-400 text-xs">2nd</span>}
-                    {i === 2 && <span className="text-gray-400 text-xs">3rd</span>}
-                    {i > 2 && <span className="text-gray-400 text-xs">#{i + 1}</span>}
-                    <span className="text-sm font-medium">{s.nickname}</span>
-                  </div>
-                  <span className="font-mono font-bold" style={{ color: '#F3BA2F' }}>{s.score}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <button data-testid="go-home-btn" onClick={() => navigate('/')}
-            className="h-12 px-8 rounded-xl font-semibold flex items-center justify-center gap-2 mx-auto active:scale-95 transition-all"
-            style={{ background: '#1E1E1E', border: '1px solid #27272A', color: '#F2F3F5' }}>
-            <Home size={18} /> Play Again
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
+if (state === 'game_over' && standings) {
+  const winner = standings[0];
+  const myRank = standings.find(s => s.player_id === playerId);
+  const isTop3 = myRank && myRank.rank <= 3;
 
   return (
-    <div className="min-h-screen flex items-center justify-center relative z-10">
-      <div className="text-center">
-        <div className="w-8 h-8 border-2 border-[#F3BA2F] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-gray-400">{reconnecting ? 'Reconnecting...' : 'Connecting...'}</p>
-      </div>
+    <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10 max-w-lg mx-auto">
+
+      {/* ✅ BUID Modal for top 3 */}
+      {isTop3 && !isHost && (
+        <BuidModal
+          rank={myRank.rank}
+          nickname={myRank.nickname}
+          score={myRank.score}
+          code={code}
+          playerId={playerId}
+        />
+      )}
+
+      <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="text-center w-full">
+        <img src="/logo.png" alt="Binance Claw Quiz" className="w-20 h-20 mx-auto mb-2 object-contain" />
+        <Trophy size={36} style={{ color: '#F3BA2F' }} className="mx-auto mb-3" />
+        <h2 data-testid="game-over-title" className="text-3xl font-bold mb-1" style={{ color: '#F3BA2F' }}>Game Over!</h2>
+        {winner && <p className="text-lg mb-6"><span style={{ color: '#00F0FF' }}>{winner.nickname}</span> wins!</p>}
+
+        {myRank && !isHost && (
+          <div className="rounded-xl p-4 mb-6 inline-block" style={{ background: '#121212', border: '1px solid #F3BA2F50' }}>
+            <p className="text-gray-400 text-xs">Your Rank</p>
+            <p className="text-2xl font-bold" style={{ color: '#F3BA2F' }}>#{myRank.rank}</p>
+            <p className="text-sm text-gray-400">{myRank.score} pts</p>
+          </div>
+        )}
+
+        <div className="rounded-xl p-4 mb-6 w-full" style={{ background: '#121212', border: '1px solid #27272A' }}>
+          <p className="text-sm font-semibold mb-3" style={{ color: '#F3BA2F' }}>Final Standings</p>
+          <div className="space-y-2">
+            {standings.map((s, i) => (
+              <div key={s.player_id} data-testid={`final-rank-${i}`}
+                className="flex items-center justify-between px-3 py-2 rounded-lg"
+                style={{ background: i === 0 ? '#F3BA2F15' : '#1E1E1E' }}>
+                <div className="flex items-center gap-2">
+                  {i === 0 && <Crown size={14} style={{ color: '#F3BA2F' }} />}
+                  {i === 1 && <span className="text-gray-400 text-xs">2nd</span>}
+                  {i === 2 && <span className="text-gray-400 text-xs">3rd</span>}
+                  {i > 2 && <span className="text-gray-400 text-xs">#{i + 1}</span>}
+                  <span className="text-sm font-medium">{s.nickname}</span>
+                </div>
+                <span className="font-mono font-bold" style={{ color: '#F3BA2F' }}>{s.score}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <button data-testid="go-home-btn" onClick={() => navigate('/')}
+          className="h-12 px-8 rounded-xl font-semibold flex items-center justify-center gap-2 mx-auto active:scale-95 transition-all"
+          style={{ background: '#1E1E1E', border: '1px solid #27272A', color: '#F2F3F5' }}>
+          <Home size={18} /> Play Again
+        </button>
+      </motion.div>
     </div>
   );
 }
