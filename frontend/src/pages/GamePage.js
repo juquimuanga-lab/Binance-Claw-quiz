@@ -85,19 +85,19 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                 <p>
                   Your personal data submitted through Binance Telegram activities will be
                   managed by Binance in accordance with the{' '}
-  
+                  
                     href="https://www.binance.com/en/privacy"
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ color: '#00F0FF' }}
                     className="underline"
-                >
-                  Binance Privacy Policy
-                </a>
-                . Please note that Telegram is a third-party platform with its own privacy
+                  >
+                    Binance Privacy Policy
+                  </a>
+                  . Please note that Telegram is a third-party platform with its own privacy
                   policies, and your interactions on Telegram are also subject to Telegram's
                   terms and privacy practices.
-               </p>
+                </p>
 
                 <p>
                   You have the right to withdraw your consent and request the removal of your
@@ -294,7 +294,6 @@ export default function GamePage() {
       setWsReady(true);
       setReconnecting(false);
 
-      // Register host Telegram chat_id for BUID reward notifications
       if (isHost) {
         const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
         if (tgUser?.id) {
@@ -305,7 +304,6 @@ export default function GamePage() {
         }
       }
 
-      // Flush any queued messages
       while (pendingMessages.current.length > 0) {
         const msg = pendingMessages.current.shift();
         socket.send(JSON.stringify(msg));
@@ -630,7 +628,6 @@ export default function GamePage() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10 max-w-lg mx-auto">
 
-        {/* BUID Modal — only for top 3 non-host players */}
         {isTop3 && !isHost && (
           <BuidModal
             rank={myRank.rank}
