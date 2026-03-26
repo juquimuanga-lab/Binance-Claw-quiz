@@ -1120,6 +1120,31 @@ async def get_session_buids(code: str):
     except Exception as e:
         logger.error(f"Get BUIDs error: {e}")
         return {"code": code.upper(), "submissions": []}
+        
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
+
+@app.get("/api/admin/session/{code}/buids")
+async def admin_get_buids(code: str, secret: str = Query(...)):
+    """
+    Admin-only endpoint to view decrypted BUIDs.
+    Requires ADMIN_SECRET query param — equivalent to your buid_admin role.
+    Decryption only happens here, never in public endpoints.
+    """
+    if not secret or secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    submissions = await db.buid_submissions.find(
+        {"code": code.upper()},
+        {"_id": 0}
+    ).sort("rank", 1).to_list(10)
+
+    # Decrypt only for admin view
+    for s in submissions:
+        if "buid_encrypted" in s:
+            s["buid"] = decrypt_buid(s["buid_encrypted"])
+            del s["buid_encrypted"]
+
+    return {"code": code.upper(), "submissions": submissions}
 
 # ================= AGENT ROUTES =================
 
