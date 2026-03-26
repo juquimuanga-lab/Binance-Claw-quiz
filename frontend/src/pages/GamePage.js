@@ -94,9 +94,7 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                   >
                     Binance Privacy Policy
                   </a>
-                  . Please note that Telegram is a third-party platform with its own privacy
-                  policies, and your interactions on Telegram are also subject to Telegram's
-                  terms and privacy practices.
+                  {'. Please note that Telegram is a third-party platform with its own privacy policies, and your interactions on Telegram are also subject to Telegram\'s terms and privacy practices.'}
                 </p>
 
                 <p>
@@ -112,7 +110,7 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                   >
                     official Binance Telegram support channel
                   </a>
-                  .
+                  {'.'}
                 </p>
 
                 <div
@@ -194,7 +192,7 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                 >
                   Terms of BUID Submission
                 </button>
-                . My BUID will be securely stored and used only for reward processing.
+                {'. My BUID will be securely stored and used only for reward processing.'}
               </label>
             </div>
 
@@ -701,4 +699,4 @@ export default function GamePage() {
       </div>
     </div>
   );
-        }
+                         }
