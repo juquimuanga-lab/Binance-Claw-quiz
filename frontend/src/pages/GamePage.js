@@ -83,21 +83,21 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                 </p>
 
                 <p>
-                  Your personal data submitted through Binance Telegram activities will be
-                  managed by Binance in accordance with the{' '}
-                  
-                    href="https://www.binance.com/en/privacy"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: '#00F0FF' }}
-                    className="underline"
-                  >
-                    Binance Privacy Policy
-                  </a>
-                  . Please note that Telegram is a third-party platform with its own privacy
-                  policies, and your interactions on Telegram are also subject to Telegram's
-                  terms and privacy practices.
-                </p>
+  Your personal data submitted through Binance Telegram activities will be
+  managed by Binance in accordance with the{' '}
+  
+    href="https://www.binance.com/en/privacy"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{ color: '#00F0FF' }}
+    className="underline"
+  >
+    Binance Privacy Policy
+  </a>
+  . Please note that Telegram is a third-party platform with its own privacy
+  policies, and your interactions on Telegram are also subject to Telegram's
+  terms and privacy practices.
+</p>
 
                 <p>
                   You have the right to withdraw your consent and request the removal of your
