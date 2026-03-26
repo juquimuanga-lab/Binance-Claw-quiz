@@ -78,14 +78,15 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                 <p>
                   By submitting your Binance User ID (BUID), you agree to allow Binance to
                   securely store your BUID for the purpose of managing your participation in
-                  current and future <span style={{ color: '#F3BA2F' }}>Binance Telegram</span> marketing
-                  campaigns and activities.
+                  current and future{' '}
+                  <span style={{ color: '#F3BA2F' }}>Binance Telegram</span>{' '}
+                  marketing campaigns and activities.
                 </p>
 
                 <p>
                   Your personal data submitted through Binance Telegram activities will be
                   managed by Binance in accordance with the{' '}
-                  
+                  <a
                     href="https://www.binance.com/en/privacy"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -101,7 +102,7 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
                   You have the right to withdraw your consent and request the removal of your
                   BUID from the Binance Telegram Activities database at any time. To do so,
                   please contact us via the{' '}
-                  
+                  <a
                     href="https://t.me/binance"
                     target="_blank"
                     rel="noopener noreferrer"
