@@ -17,12 +17,14 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const rankEmoji = { 1: '🥇', 2: '🥈', 3: '🥉' };
   const rankColor = { 1: '#F3BA2F', 2: '#C0C0C0', 3: '#CD7F32' };
 
   const submitBuid = async () => {
-    if (!buid.trim()) return;
+    if (!buid.trim() || !agreedToTerms) return;
     setSubmitting(true);
     try {
       await fetch(`${API}/api/session/submit-buid`, {
@@ -52,8 +54,103 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       className="fixed inset-0 z-50 flex items-center justify-center px-5"
-      style={{ background: 'rgba(0,0,0,0.85)' }}
+      style={{ background: 'rgba(0,0,0,0.90)' }}
     >
+      {/* ===== TERMS MODAL ===== */}
+      <AnimatePresence>
+        {showTerms && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="fixed inset-0 z-60 flex items-center justify-center px-5"
+            style={{ background: 'rgba(0,0,0,0.95)' }}
+          >
+            <div
+              className="w-full max-w-sm rounded-2xl p-5 max-h-[80vh] overflow-y-auto"
+              style={{ background: '#121212', border: '1px solid #27272A' }}
+            >
+              <h3 className="text-base font-bold mb-4" style={{ color: '#F3BA2F' }}>
+                📋 Terms of BUID Submission
+              </h3>
+
+              <div className="space-y-4 text-gray-400 text-xs leading-relaxed">
+                <p>
+                  By submitting your Binance User ID (BUID), you agree to allow Binance to
+                  securely store your BUID for the purpose of managing your participation in
+                  current and future <span style={{ color: '#F3BA2F' }}>Binance Telegram</span> marketing
+                  campaigns and activities.
+                </p>
+
+                <p>
+                  Your personal data submitted through Binance Telegram activities will be
+                  managed by Binance in accordance with the{' '}
+                  
+                    href="https://www.binance.com/en/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: '#00F0FF' }}
+                    className="underline"
+                  >
+                    Binance Privacy Policy
+                  </a>
+                  . Please note that Telegram is a third-party platform with its own privacy
+                  policies, and your interactions on Telegram are also subject to Telegram's
+                  terms and privacy practices.
+                </p>
+
+                <p>
+                  You have the right to withdraw your consent and request the removal of your
+                  BUID from the Binance Telegram Activities database at any time. To do so,
+                  please contact us via the{' '}
+                  
+                    href="https://t.me/binance"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: '#00F0FF' }}
+                    className="underline"
+                  >
+                    official Binance Telegram support channel
+                  </a>
+                  .
+                </p>
+
+                <div
+                  className="rounded-xl p-3 text-xs"
+                  style={{ background: '#1E1E1E', border: '1px solid #27272A' }}
+                >
+                  <p className="font-semibold mb-1" style={{ color: '#F3BA2F' }}>🔐 How we protect your BUID</p>
+                  <p className="text-gray-500">
+                    Your BUID is encrypted using AES-256-CBC with a unique random key before
+                    being stored. It is never exposed publicly and is only decrypted when
+                    processing your reward.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  setAgreedToTerms(true);
+                  setShowTerms(false);
+                }}
+                className="w-full h-11 rounded-xl font-bold text-sm mt-5 active:scale-95 transition-all"
+                style={{ background: '#F3BA2F', color: '#000' }}
+              >
+                ✅ I Agree & Accept
+              </button>
+
+              <button
+                onClick={() => setShowTerms(false)}
+                className="w-full h-10 rounded-xl text-xs text-gray-600 hover:text-gray-400 transition-colors mt-2"
+              >
+                Close
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ===== MAIN BUID MODAL ===== */}
       <motion.div
         initial={{ scale: 0.8, y: 20 }}
         animate={{ scale: 1, y: 0 }}
@@ -67,24 +164,49 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
               You placed #{rank}!
             </h3>
             <p className="text-gray-400 text-sm mb-1">{score.toLocaleString()} points</p>
-            <p className="text-gray-300 text-sm mb-5">
+            <p className="text-gray-300 text-sm mb-4">
               Enter your <span style={{ color: '#F3BA2F' }}>BUID</span> to claim your reward
             </p>
+
             <input
               value={buid}
               onChange={e => setBuid(e.target.value)}
               placeholder="Enter your BUID here"
-              className="w-full h-12 px-4 rounded-xl text-white text-center font-mono placeholder:text-gray-600 outline-none mb-3"
+              className="w-full h-12 px-4 rounded-xl text-white text-center font-mono placeholder:text-gray-600 outline-none mb-4"
               style={{ background: '#0A0A0A', border: '1px solid #27272A' }}
             />
+
+            {/* Terms checkbox */}
+            <div className="flex items-start gap-2 mb-4 text-left">
+              <input
+                type="checkbox"
+                id="terms-check"
+                checked={agreedToTerms}
+                onChange={e => setAgreedToTerms(e.target.checked)}
+                className="mt-0.5 shrink-0 accent-yellow-400"
+              />
+              <label htmlFor="terms-check" className="text-xs text-gray-500 leading-relaxed">
+                I agree to the{' '}
+                <button
+                  onClick={() => setShowTerms(true)}
+                  className="underline transition-colors"
+                  style={{ color: '#F3BA2F' }}
+                >
+                  Terms of BUID Submission
+                </button>
+                . My BUID will be securely stored and used only for reward processing.
+              </label>
+            </div>
+
             <button
               onClick={submitBuid}
-              disabled={submitting || !buid.trim()}
-              className="w-full h-12 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50 mb-3"
+              disabled={submitting || !buid.trim() || !agreedToTerms}
+              className="w-full h-12 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-40 mb-3"
               style={{ background: rankColor[rank] || '#F3BA2F', color: '#000' }}
             >
               {submitting ? '⏳ Submitting...' : '🎁 Claim Reward'}
             </button>
+
             <button
               onClick={() => setDismissed(true)}
               className="text-gray-600 text-xs hover:text-gray-400 transition-colors"
@@ -98,8 +220,11 @@ function BuidModal({ rank, nickname, score, code, playerId }) {
             <h3 className="text-xl font-black mb-2" style={{ color: '#00FF29' }}>
               BUID Submitted!
             </h3>
-            <p className="text-gray-400 text-sm mb-4">
-              Your BUID has been sent to the host. Rewards will be processed shortly.
+            <p className="text-gray-400 text-sm mb-1">
+              Your BUID has been securely encrypted and sent to the host.
+            </p>
+            <p className="text-gray-600 text-xs mb-4">
+              Rewards will be processed shortly. Thank you for participating!
             </p>
             <button
               onClick={() => setDismissed(true)}
