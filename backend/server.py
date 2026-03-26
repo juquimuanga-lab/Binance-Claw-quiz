@@ -19,6 +19,9 @@ from bs4 import BeautifulSoup
 from groq import Groq
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+import base64
 
 # ================= INIT =================
 
@@ -236,6 +239,63 @@ async def check_daily_limit(agent: dict):
             status_code=429,
             detail=f"Daily quiz limit of {DAILY_QUIZ_LIMIT} reached. Resets at midnight UTC."
         )
+
+# ================= BUID ENCRYPTION =================
+
+BUID_ENCRYPTION_KEY = bytes.fromhex(
+    os.environ.get("BUID_ENCRYPTION_KEY", os.urandom(32).hex())
+)
+
+def encrypt_buid(buid: str) -> str:
+    """
+    Encrypts a BUID using AES-256-CBC.
+    Each call generates a random 16-byte IV so identical BUIDs
+    always produce different ciphertexts — no pattern leakage.
+    Stored format: iv_hex:ciphertext_hex
+    """
+    iv = os.urandom(16)
+    cipher = Cipher(
+        algorithms.AES(BUID_ENCRYPTION_KEY),
+        modes.CBC(iv),
+        backend=default_backend()
+    )
+    encryptor = cipher.encryptor()
+
+    # Pad to AES block size (16 bytes)
+    raw = buid.encode('utf-8')
+    pad_len = 16 - (len(raw) % 16)
+    padded = raw + bytes([pad_len] * pad_len)
+
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+
+    return f"{iv.hex()}:{ciphertext.hex()}"
+
+
+def decrypt_buid(encrypted: str) -> str:
+    """
+    Decrypts a BUID. Only called when explicitly needed
+    (e.g. admin export or /check_registration equivalent).
+    Splits iv_hex:ciphertext_hex to recover IV then deciphers.
+    """
+    try:
+        iv_hex, ciphertext_hex = encrypted.split(":")
+        iv = bytes.fromhex(iv_hex)
+        ciphertext = bytes.fromhex(ciphertext_hex)
+
+        cipher = Cipher(
+            algorithms.AES(BUID_ENCRYPTION_KEY),
+            modes.CBC(iv),
+            backend=default_backend()
+        )
+        decryptor = cipher.decryptor()
+        padded = decryptor.update(ciphertext) + decryptor.finalize()
+
+        # Remove padding
+        pad_len = padded[-1]
+        return padded[:-pad_len].decode('utf-8')
+    except Exception as e:
+        logger.error(f"BUID decrypt error: {e}")
+        return "[decryption failed]"
 
 # ================= MODELS =================
 
@@ -980,64 +1040,59 @@ async def trending_topics():
 
 @app.post("/api/session/submit-buid")
 async def submit_buid(req: BuidSubmitRequest):
-    """
-    Called when a top 3 winner submits their BUID.
-    Saves to DB and sends a Telegram message to the host.
-    """
     try:
         code = req.code.strip().upper()
 
-        # Save BUID submission to DB
+        # ✅ Encrypt BUID before any DB write
+        encrypted_buid = encrypt_buid(req.buid.strip())
+
         buid_doc = {
             "code": code,
             "player_id": req.player_id,
             "nickname": req.nickname,
-            "buid": req.buid.strip(),
+            "buid_encrypted": encrypted_buid,  # ✅ never store plaintext
             "rank": req.rank,
             "score": req.score,
             "submitted_at": str(datetime.datetime.utcnow()),
         }
         await db.buid_submissions.insert_one(buid_doc)
 
-        # Check if all top 3 have submitted for this session
         submissions = await db.buid_submissions.find(
             {"code": code}
         ).to_list(10)
 
-        # Get session to find host chat id
         session = await db.sessions.find_one({"code": code})
         host_chat_id = session.get("host_chat_id") if session else None
 
-        # Send TG message to host if we have their chat id
+        # ✅ Decrypt only at the point of sending to host TG — nowhere else
         if tg_bot and host_chat_id:
             rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}
+            decrypted_for_host = decrypt_buid(encrypted_buid)
+
             msg = (
                 f"🏆 *Quiz Rewards — Session {code}*\n\n"
                 f"A winner has submitted their BUID!\n\n"
                 f"{rank_emoji.get(req.rank, '🎖')} *Rank #{req.rank}*\n"
                 f"👤 Name: {req.nickname}\n"
                 f"💰 Score: {req.score:,} pts\n"
-                f"🔑 BUID: `{req.buid}`\n\n"
+                f"🔑 BUID: `{decrypted_for_host}`\n\n"
             )
 
-            # If all 3 submitted, show full summary
             if len(submissions) >= 3:
                 sorted_subs = sorted(submissions, key=lambda x: x["rank"])[:3]
                 msg = f"🏆 *All Top 3 BUIDs Received — Session {code}*\n\n"
                 for s in sorted_subs:
+                    plain_buid = decrypt_buid(s["buid_encrypted"])
+                    rank_emoji_val = rank_emoji.get(s['rank'], '🎖')
                     msg += (
-                        f"{rank_emoji.get(s['rank'], '🎖')} #{s['rank']} {s['nickname']}\n"
+                        f"{rank_emoji_val} #{s['rank']} {s['nickname']}\n"
                         f"   Score: {s['score']:,} pts\n"
-                        f"   BUID: `{s['buid']}`\n\n"
+                        f"   BUID: `{plain_buid}`\n\n"
                     )
                 msg += "✅ Please process rewards for the above players."
 
             try:
-                tg_bot.send_message(
-                    host_chat_id,
-                    msg,
-                    parse_mode="Markdown"
-                )
+                tg_bot.send_message(host_chat_id, msg, parse_mode="Markdown")
                 logger.info(f"BUID reward message sent to host {host_chat_id}")
             except Exception as tg_err:
                 logger.error(f"Failed to send TG message: {tg_err}")
