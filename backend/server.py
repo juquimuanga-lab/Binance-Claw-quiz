@@ -58,7 +58,7 @@ if TELEGRAM_BOT_TOKEN:
         tg_bot.send_message(
             message.chat.id,
             f"👋 Welcome {name}!\n\n"
-            f"🦅 *Binance Claw Quiz*\n\n"
+            f"🦞 *Binance Claw Quiz*\n\n"
             f"Test your crypto knowledge with AI-generated quizzes from Binance Academy.\n\n"
             f"• 🏆 Compete with friends in real-time\n"
             f"• 🤖 AI-powered questions\n"
