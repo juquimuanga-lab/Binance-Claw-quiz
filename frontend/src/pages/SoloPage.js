@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Search, ArrowLeft, Loader2, BookOpen, Play, Clock, Trophy, Home, Triangle, Diamond, Circle, Square, Check, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { fireCelebration } from '@/utils/celebration';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const COLORS = ['#FF2E63', '#00F0FF', '#F3BA2F', '#00FF29'];
@@ -24,6 +26,8 @@ export default function SoloPage() {
   const [showResult, setShowResult] = useState(false);
   const [answers, setAnswers] = useState([]);
   const [articleTitle, setArticleTitle] = useState('');
+  const { langCode } = useLanguage();
+  const t = useTranslations(langCode);
 
   const timerRef = useRef(null);
   const startTimeRef = useRef(null);
