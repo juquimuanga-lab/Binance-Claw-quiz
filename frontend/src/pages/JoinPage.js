@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ArrowLeft, LogIn, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -38,7 +40,9 @@ export default function JoinPage() {
       setJoining(false);
     }
   };
-
+  const { langCode } = useLanguage();
+  const t = useTranslations(langCode);
+  
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-5 py-8 relative z-10">
       <div className="w-full max-w-sm">
