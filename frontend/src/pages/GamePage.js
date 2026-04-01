@@ -3,12 +3,16 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Users, Trophy, Clock, ChevronRight, Crown, Copy, Check, Play, Home, Triangle, Diamond, Circle, Square } from 'lucide-react';
 import { fireCelebration } from '@/utils/celebration';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API = process.env.REACT_APP_BACKEND_URL || 'https://binance-claw-quiz-api.onrender.com';
 const WS_URL = API.replace('https://', 'wss://').replace('http://', 'ws://');
 
 const COLORS = ['#FF2E63', '#00F0FF', '#F3BA2F', '#00FF29'];
 const ICONS = [Triangle, Diamond, Circle, Square];
+const { langCode } = useLanguage();
+const t = useTranslations(langCode);
 
 // ================= BUID MODAL =================
 
