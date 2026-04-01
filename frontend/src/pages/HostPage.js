@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, ArrowLeft, Loader2, BookOpen, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API =
   process.env.REACT_APP_BACKEND_URL ||
@@ -35,6 +37,8 @@ export default function HostPage() {
   const [step, setStep] = useState('search');
   const [loadingMsg, setLoadingMsg] = useState('');
   const [elapsed, setElapsed] = useState(0);
+  const { langCode } = useLanguage();
+  const t = useTranslations(langCode);
 
   const abortRef = useRef(null);
   const timerRef = useRef(null);
@@ -148,6 +152,7 @@ export default function HostPage() {
           article_title: articleContent?.title || selectedArticle?.title,
           article_content: articleContent?.content || null,
           num_questions: 10,
+          language: langCode,
         }),
         signal: abortRef.current.signal,
       });
