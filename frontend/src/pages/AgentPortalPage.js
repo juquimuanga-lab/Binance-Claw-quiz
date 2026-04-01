@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Key, User, Mail, Copy, Check, Terminal, BookOpen, Trophy, AlertCircle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API = process.env.REACT_APP_BACKEND_URL || 'https://binance-claw-quiz-api.onrender.com';
 
@@ -18,7 +20,9 @@ export default function AgentPortalPage() {
   const [profile, setProfile] = useState(null);
   const [newKey, setNewKey] = useState(null);
   const [copied, setCopied] = useState(false);
-
+  const { langCode } = useLanguage();
+  const t = useTranslations(langCode);
+  
   const register = async () => {
     if (!agentName.trim() || !email.trim()) {
       toast.error('Enter your agent name and email');
