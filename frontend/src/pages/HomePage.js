@@ -6,6 +6,8 @@ import {
   BarChart2, Terminal, ChevronRight, Star,
   TrendingUp, Gamepad2, BookOpen
 } from 'lucide-react';
+import { useLanguage } from '@/context/LanguageContext';
+import { useTranslations } from '@/i18n/translations';
 
 const API = process.env.REACT_APP_BACKEND_URL || 'https://binance-claw-quiz-api.onrender.com';
 
@@ -47,6 +49,8 @@ export default function HomePage() {
 
   const maxCount = trending?.trending?.[0]?.count || 1;
   const maxScore = leaderboard?.top_players?.[0]?.total_score || 1;
+  const { langCode } = useLanguage();
+  const t = useTranslations(langCode);
 
   return (
     <div className="min-h-screen relative z-10">
